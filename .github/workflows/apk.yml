@@ -153,10 +153,10 @@ jobs:
           SIGNED: ${{ needs.build.outputs.signed }}
         run: |
           case "$TAG" in v[0-9A-Za-z._-]*) ;; *) echo "::error::invalid release tag: $TAG"; exit 1 ;; esac
-          sha256sum dist/cccodroid.apk dist/cccodroid-36.apk > dist/SHA256SUMS.txt
+          (cd dist && sha256sum cccodroid.apk cccodroid-36.apk > SHA256SUMS.txt)
           NOTES="APK build for ${TAG} (signed: ${SIGNED})."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --clobber
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --clobber
           else
-            gh release create "$TAG" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --title "$TAG" --notes "$NOTES"
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --title "$TAG" --notes "$NOTES"
           fi
