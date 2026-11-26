@@ -252,7 +252,7 @@
 
 
   // ── 交流与反馈：帮助页最后一节、更新说明卡片底部共用（社群群号与 Discord 暂时下架，择日恢复） ──
-  const COMMUNITY = { repo: "https://github.com/greyoak111/cccodroid" };
+  const COMMUNITY = { repo: "https://github.com/WitchKlee/cccodroid" };
   function communityHtml(compact) {
     const R = COMMUNITY.repo, zh = isZh();
     return `<div class="cm-box${compact ? " compact" : ""}">

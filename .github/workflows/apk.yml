@@ -7,6 +7,7 @@ name: apk
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths-ignore: ["docs/**", "**.md", "devkit/**", "devkit-*", ".github/workflows/devkit.yml"]
   pull_request:
     paths-ignore: ["docs/**", "**.md"]
@@ -55,10 +56,13 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # 只有 main 上的运行进正式钥匙所在的环境；其余（PR、别的分支手动跑）进 apk-ci，拿不到钥匙。
+    # 只有 main 或 v* 标签的运行进正式钥匙所在的环境；其余（PR、别的分支手动跑）进 apk-ci，拿不到钥匙。
     # 这里必须落到一个真实存在的环境名：算成空字符串时 GitHub 会让这个被跳过的 job 一直「等环境」，
     # 测试失败后整个运行要挂几十分钟才收尾（PR #204：20:23 就失败了，21:00 运行才结束）。
-    environment: ${{ (github.ref == 'refs/heads/main' && github.event_name != 'pull_request') && 'apk-release' || 'apk-ci' }}
+    environment: ${{ ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && github.event_name != 'pull_request') && 'apk-release' || 'apk-ci' }}
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      signed: ${{ steps.meta.outputs.signed }}
     env:
       BUILD_TOOLS: "35.0.0"
       PLATFORM: "android-35"
@@ -96,6 +100,9 @@ jobs:
           fi
 
       - name: 构建
+        id: meta
+        env:
+          EXPECT: ${{ vars.CCCODROID_CERT_SHA256 }}
         run: |
           BT="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS"
           export CC_ANDROID="$ANDROID_SDK_ROOT/ndk/$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
@@ -105,20 +112,46 @@ jobs:
           TARGET_SDK=36 sh scripts/build.sh && mv dist/cccodroid.apk dist/cccodroid-36.apk
           sh scripts/build.sh
           rm -f "$RUNNER_TEMP/key.json"
-          # 证书指纹：正式包必须是 README 里写的那一张（B7:03…8F:E0），对不上就别出包——
-          # 钥匙被意外换掉时不会静默发出别的证书签的「正式包」（审查 v0.5.7 L12）。测试包只打出来看
-          EXPECT=b70361595dd3d8d704dd210ed596fc577014ce2272884fb6980bf69623338fe0
+          # 证书指纹：如配置了仓库变量 CCCODROID_CERT_SHA256，则正式包必须严格匹配，防止钥匙被意外换掉
           for a in dist/cccodroid.apk dist/cccodroid-36.apk; do
             got=$("$BT/apksigner" verify --print-certs "$a" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
             echo "$a  $got"
-            if [ "$SIGNED" = release ] && [ "$got" != "$EXPECT" ]; then echo "::error::$a 的签名证书不是正式钥匙（$got）"; exit 1; fi
+            if [ "$SIGNED" = release ] && [ -n "$EXPECT" ] && [ "$got" != "$EXPECT" ]; then echo "::error::$a 的签名证书不是正式钥匙（$got）"; exit 1; fi
           done
-          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          echo "artifact_name=cccodroid-${SIGNED}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "signed=${SIGNED}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4.6.2
         with:
-          name: cccodroid-${{ env.SIGNED }}-${{ env.SHORT_SHA }}
+          name: ${{ steps.meta.outputs.artifact_name }}
           path: |
             dist/cccodroid.apk
             dist/cccodroid-36.apk
           retention-days: 30
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093   # v4.3.0
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+      - name: 发布 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+        run: |
+          sha256sum dist/cccodroid.apk dist/cccodroid-36.apk > dist/SHA256SUMS.txt
+          NOTES="APK build for ${TAG} (signed: ${SIGNED})."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/cccodroid.apk dist/cccodroid-36.apk dist/SHA256SUMS.txt --title "$TAG" --notes "$NOTES"
+          fi

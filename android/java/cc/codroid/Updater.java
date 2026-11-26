@@ -39,11 +39,12 @@ import org.json.JSONObject;
  */
 final class Updater {
     static final String TAG = "cccodroid-upd";
-    static final String REPO = "greyoak111/cccodroid";
-    /** 备用源：cccodroid.net 镜像了最近几个版本的 APK 和一份同形状的发布列表（dl/releases.json）。
-     *  只在 GitHub 连不上 / 下载不顺时用；下来的 APK 照样核 sha256 和签名。工具包太大，没有镜像 */
+    static final String REPO = "WitchKlee/cccodroid";
+    /** 工具包沿用上游预构建 arm64 发布（包名保持 cc.codroid，内置 devkit-pin.json 与 Ed25519 验签） */
+    static final String DEVKIT_REPO = "greyoak111/cccodroid";
+    /** 备用源：上游镜像（仅用于 Claude Code 版本与工具包分块镜像，不用于本 Fork 的 APK 更新） */
     static final String MIRROR = "https://cccodroid.net";
-    /** 同一份 APK 与发布列表的直连线路（不经 Cloudflare；国内有的网络只通其中一条） */
+    /** 直连镜像（用于 Claude Code 与工具包镜像续传） */
     static final String DL = "https://dl.cccodroid.net";
     /** 工具包与本 APK 的接口版本：lock.json 里的 compat（缺省 1）对不上就不装，防止新工具包配旧外壳 */
     static final int DEVKIT_COMPAT = 1;
@@ -415,14 +416,14 @@ final class Updater {
         // 网差时界面能卡在「识别中」十几分钟、没法取消（0.6.9 审计 200-14-07）。超了就按认不出处理，调用方有兜底
         long deadline = System.nanoTime() + IDENTIFY_BUDGET_MS * 1_000_000L;
         try {
-            JSONArray rels = new JSONArray(new String(Installer.httpGetSmall(feed(), msLeft(deadline)), StandardCharsets.UTF_8));
+            JSONArray rels = new JSONArray(new String(Installer.httpGetSmall(devkitFeed(), msLeft(deadline)), StandardCharsets.UTF_8));
             int n = 0;
             for (int i = 0; i < rels.length() && n < 8; i++) {
                 JSONObject r = rels.getJSONObject(i);
                 String tag = r.optString("tag_name");
                 if (r.optBoolean("draft") || !tag.startsWith("devkit-")) continue;
                 n++;
-                String base = "https://github.com/" + REPO + "/releases/download/" + tag + "/";
+                String base = "https://github.com/" + DEVKIT_REPO + "/releases/download/" + tag + "/";
                 try {
                     // 线上清单要验过签才拿来认本地文件：只靠 TLS 的话，换掉清单就能让自制工具包显示成「已发布的版本」（审查 10-29 低8）
                     byte[] lb = Installer.httpGetSmall(base + "devkit.lock.json", msLeft(deadline));
@@ -571,26 +572,27 @@ final class Updater {
         try {
             lastError = "";
             refreshCurrent();
-            String[] ghErr = new String[1];
-            JSONArray[] lists = fetchLists(ghErr);
-            JSONArray rels = lists[0];
-            boolean mirror = false;
-            if (rels == null) {
-                lastError = Tr.t("连不上 GitHub：") + ghErr[0];
-                rels = lists[1];
-                mirror = rels != null;
-                // GitHub 不通：应用本身改看镜像的发布列表；工具包没有镜像，如实说查不了（别报成"已是最新"）
-                if (rels == null) app.set("error", lastError);
-                if (pinnedInstalled()) devkit.set("uptodate", Tr.t("已是本应用配套的版本（GitHub 连不上，暂时查不了更新的）"));
-                else devkit.set("error", lastError);
-            }
-            if (rels != null) {
-                try { checkApp(rels); if (mirror && !"error".equals(app.state)) app.message = app.message.isEmpty() ? Tr.t("来自 cccodroid.net 镜像") : app.message + Tr.t(" · 来自 cccodroid.net 镜像"); }
+            String[] appErr = new String[1], dkErr = new String[1];
+            JSONArray[] lists = fetchLists(appErr, dkErr);
+            JSONArray appRels = lists[0], dkRels = lists[1];
+            if (appRels == null) {
+                lastError = Tr.t("连不上 GitHub：") + appErr[0];
+                app.set("error", lastError);
+            } else {
+                try { checkApp(appRels); }
                 catch (Exception e) { app.set("error", e.getMessage()); }
-                // 首装还没完成（工具包没装好）就别查工具包：那时读不到已装的模块，planModules 会按「整包用户」规划成全部模块，
-                // 自动更新在 Wi‑Fi 下把它们全下好，首装刚按勾选装完，启动流程又把这份「已下载的更新」装上 —— 勾了两个、装了八个（群友 10-24）
-                if (!env.devkitReady()) devkit.set("uptodate", Tr.t("首次安装进行中"));
-                else if (!mirror) try { checkDevkit(rels); } catch (Exception e) { if (!"ready".equals(devkit.state)) devkit.set("error", e.getMessage()); }
+            }
+            // 首装还没完成（工具包没装好）就别查工具包：那时读不到已装的模块，planModules 会按「整包用户」规划成全部模块，
+            // 自动更新在 Wi‑Fi 下把它们全下好，首装刚按勾选装完，启动流程又把这份「已下载的更新」装上 —— 勾了两个、装了八个（群友 10-24）
+            if (!env.devkitReady()) {
+                devkit.set("uptodate", Tr.t("首次安装进行中"));
+            } else if (dkRels == null) {
+                String e = Tr.t("连不上 GitHub：") + dkErr[0];
+                if (lastError.isEmpty()) lastError = e;
+                if (pinnedInstalled()) devkit.set("uptodate", Tr.t("已是本应用配套的版本（GitHub 连不上，暂时查不了更新的）"));
+                else devkit.set("error", e);
+            } else {
+                try { checkDevkit(dkRels); } catch (Exception e) { if (!"ready".equals(devkit.state)) devkit.set("error", e.getMessage()); }
             }
             try { checkClaude(); } catch (Exception e) { claude.set("error", Tr.t("连不上 downloads.claude.ai：") + e.getMessage()); }
             long now = System.currentTimeMillis();
@@ -605,18 +607,20 @@ final class Updater {
     }
 
     /**
-     * 发布列表三条线同时问：GitHub（App + 工具包）、cccodroid.net 与 dl.cccodroid.net（只有 App，由 GitHub 定时生成）。
-     * 以前先等 GitHub 连接 20 秒 + 读 60 秒超时才看镜像，不开代理的网络里一次检查要卡一分多钟（群友 10-31）。
-     * GitHub 通了就用它（镜像可能晚几分钟）；GitHub 报错立刻看镜像；GitHub 一直挂着，最多等它 15 秒，镜像有了就先用镜像。
-     * 返回 {GitHub 的列表, 镜像的列表}，没取到的是 null
+     * 并行查询两条发布列表：App APK（本 Fork 仓库 REPO）与工具包（上游预构建 DEVKIT_REPO）。
+     * 不再把上游 cccodroid.net 的 APK 镜像混入本 Fork 更新检查，避免拉到签名不同的上游包。
+     * 调试模式通过 update-feed 指向同一地址时只请求一次。
+     * 返回 {App 列表, 工具包列表}，没取到的是 null。
      */
-    private JSONArray[] fetchLists(String[] ghErr) {
-        final String[] urls = { feed(), MIRROR + "/dl/releases.json", DL + "/dl/releases.json" };
-        final JSONArray[] got = new JSONArray[3];
-        final String[] err = new String[3];
-        final boolean[] fin = new boolean[3];
+    private JSONArray[] fetchLists(String[] appErr, String[] dkErr) {
+        final String appUrl = feed(), dkUrl = devkitFeed();
+        final boolean same = appUrl.equals(dkUrl);
+        final String[] urls = same ? new String[]{ appUrl } : new String[]{ appUrl, dkUrl };
+        final JSONArray[] got = new JSONArray[urls.length];
+        final String[] err = new String[urls.length];
+        final boolean[] fin = new boolean[urls.length];
         final Object lk = new Object();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < urls.length; i++) {
             final int k = i;
             Thread t = new Thread(() -> {
                 JSONArray a = null; String e = null;
@@ -631,17 +635,20 @@ final class Updater {
         synchronized (lk) {
             for (;;) {
                 long el = System.currentTimeMillis() - t0;
-                boolean mirOk = got[1] != null || got[2] != null, mirDone = mirOk || fin[1] && fin[2];
-                // GitHub 通了就用；GitHub 失败且镜像都有结果了就收；GitHub 挂过 15 秒、镜像确实拿到了列表才不等它。
-                // 镜像都不通时得接着等 GitHub（慢但能通的梯子），不能 15 秒就放弃
-                if (got[0] != null || fin[0] && mirDone || el >= 15000 && mirOk || el >= 90000) break;
+                boolean allDone = true;
+                for (boolean b : fin) if (!b) { allDone = false; break; }
+                if (allDone || el >= 90000) break;
                 try { lk.wait(250); } catch (InterruptedException e) { break; }
             }
-            ghErr[0] = fin[0] ? err[0] : Tr.t("超时");
-            JSONArray mir = got[1];
-            if (mir == null || got[2] != null && cmpVer(latestApp(got[2]), latestApp(mir)) > 0) mir = got[2];
-            Log.i(TAG, "发布列表：GitHub " + (got[0] != null ? "通" : fin[0] ? "不通" : "未回") + "，镜像 " + (got[1] != null ? "通" : "-") + "/" + (got[2] != null ? "通" : "-"));
-            return new JSONArray[]{ got[0], mir };
+            appErr[0] = fin[0] ? err[0] : Tr.t("超时");
+            if (same) {
+                dkErr[0] = appErr[0];
+                Log.i(TAG, "发布列表：" + (got[0] != null ? "通" : fin[0] ? "不通" : "未回"));
+                return new JSONArray[]{ got[0], got[0] };
+            }
+            dkErr[0] = fin[1] ? err[1] : Tr.t("超时");
+            Log.i(TAG, "发布列表：App " + (got[0] != null ? "通" : fin[0] ? "不通" : "未回") + "，Devkit " + (got[1] != null ? "通" : fin[1] ? "不通" : "未回"));
+            return new JSONArray[]{ got[0], got[1] };
         }
     }
 
@@ -679,10 +686,9 @@ final class Updater {
                 JSONObject a = as.getJSONObject(k);
                 if (!a.optString("name").equals(name)) continue;
                 app.url = a.getString("browser_download_url");
-                // 三处都是同一份文件，谁先谁后由下载前测速定（Installer.rank），这里只管都列上
-                String gh = "https://github.com/" + REPO + "/releases/download/" + tag + "/" + name;
-                app.alt = app.url.equals(gh) ? MIRROR + "/dl/" + tag + "/" + name : gh;
-                app.alt2 = DL + "/dl/" + tag + "/" + name;
+                // 本 Fork 的 APK 仅从 GitHub Release（REPO）下载，不回落上游 cccodroid.net 镜像
+                app.alt = null;
+                app.alt2 = null;
                 app.size = a.optLong("size");
                 String d = a.optString("digest", "");
                 app.sha = d.startsWith("sha256:") ? d.substring(7).toLowerCase(java.util.Locale.ROOT) : null;
@@ -734,7 +740,7 @@ final class Updater {
                 devkit.latest = best;
             }
         }
-        String base = "https://github.com/" + REPO + "/releases/download/" + best + "/";
+        String base = "https://github.com/" + DEVKIT_REPO + "/releases/download/" + best + "/";
         // 最新的就是 APK 钉的那版（常态：新工具包跟着新 APK 走）：校验值用 APK 自带的，不联网 ——
         // 国内连不上 github.com 时，以前这里取 devkit.lock.json 失败，整行报错（群友 10-22）
         JSONObject pin = devkitPin(ctx), lock;
@@ -989,13 +995,15 @@ final class Updater {
 
     /** 发布列表地址。home/.config/cccodroid/update-feed 里写了地址就用它（测试更新流程用，形状同 GitHub API）。
      *  只在可调试的包里认：正式包里应用身份的任何程序都能写这个文件，拿它把更新检查指到别处（审查 v0.5.9 B1） */
-    private String feed() {
+    private String feedFor(String repo) {
         File f = new File(env.home, ".config/cccodroid/update-feed");
         boolean debuggable = (ctx.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         try { if (debuggable && f.isFile()) { String u = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim(); if (!u.isEmpty()) return u; } }
         catch (Exception ignored) {}
-        return "https://api.github.com/repos/" + REPO + "/releases?per_page=30";
+        return "https://api.github.com/repos/" + repo + "/releases?per_page=30";
     }
+    private String feed() { return feedFor(REPO); }
+    private String devkitFeed() { return feedFor(DEVKIT_REPO); }
 
     /** 自动模式的规则：见类注释 */
     private void autoApply() {
