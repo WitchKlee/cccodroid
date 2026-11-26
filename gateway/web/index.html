@@ -7,6 +7,7 @@
 <title>cccodroid</title>
 <link rel="icon" type="image/png" href="/icon.png">
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/dsh-ui.css">
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -43,6 +44,9 @@
   </div></div>
   <button id="btn-more" class="icon-btn" aria-label="展开工具" aria-expanded="false" data-i18n-attr="aria-label">
     <svg viewBox="0 0 24 24"><path class="more-a" d="M6 12L6 12"/><path class="more-b" d="M12 12L12 12"/><path class="more-c" d="M18 12L18 12"/></svg>
+  </button>
+  <button id="btn-dsh-panel" class="icon-btn" aria-label="右侧快捷面板" title="右侧快捷面板" data-i18n-attr="aria-label,title">
+    <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
   </button>
 </header>
 
@@ -123,6 +127,76 @@
       <span class="acct-txt"><b id="acct-name" data-i18n>设置</b><small id="acct-sub"></small></span>
       <svg viewBox="0 0 24 24"><path d="M7 15l5-5 5 5"/></svg>
     </button>
+  </div>
+</aside>
+
+<!-- ── 右侧快捷面板抽屉（左滑或顶栏按钮展开：会话速览 / 主题色板 / 快捷工作区 / 分享卡）── -->
+<aside id="dsh-rdrawer" class="hidden" aria-label="快捷面板" data-i18n-attr="aria-label">
+  <div class="dsh-rpanel">
+    <div class="dsh-rhead">
+      <div class="dsh-rtitle">
+        <b data-i18n>快捷面板</b>
+        <small id="dsh-rsess"></small>
+      </div>
+      <button id="btn-close-rdrawer" class="icon-btn" aria-label="关闭" data-i18n-attr="aria-label">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dsh-rscroll">
+      <section class="dsh-rcard">
+        <div class="dsh-rcard-h"><span data-i18n>当前会话</span><span id="dsh-rstat"></span></div>
+        <div class="dsh-rpills">
+          <button type="button" class="dsh-rpill" id="dsh-rmodel"><span id="dsh-rmodel-t">—</span></button>
+          <button type="button" class="dsh-rpill" id="dsh-rperm"><span id="dsh-rperm-t">—</span></button>
+        </div>
+        <div class="dsh-rctx-bar"><div class="dsh-rctx-fill" id="dsh-rctx-fill"></div></div>
+        <div class="dsh-rctx-meta"><span id="dsh-rctx-l" data-i18n>上下文占用</span><span id="dsh-rctx-r">—</span></div>
+      </section>
+
+      <section class="dsh-rcard">
+        <div class="dsh-rcard-h"><span data-i18n>快捷工具</span></div>
+        <div class="dsh-rtiles">
+          <button type="button" class="dsh-rtile" data-dsh-act="files">
+            <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span data-i18n>文件</span>
+          </button>
+          <button type="button" class="dsh-rtile" data-dsh-act="term">
+            <svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
+            <span data-i18n>终端</span>
+          </button>
+          <button type="button" class="dsh-rtile" data-dsh-act="git">
+            <svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-12 7"/></svg>
+            <span data-i18n>版本</span>
+          </button>
+          <button type="button" class="dsh-rtile" data-dsh-act="card">
+            <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8M8 13h5M8 17h3"/></svg>
+            <span data-i18n>分享卡片</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="dsh-rcard">
+        <div class="dsh-rcard-h"><span data-i18n>主题与色板</span><span id="dsh-rskin-tag"></span></div>
+        <div class="dsh-rmode" id="dsh-rmode">
+          <button type="button" data-md="auto" data-i18n>跟随系统</button>
+          <button type="button" data-md="light" data-i18n>浅色</button>
+          <button type="button" data-md="dark" data-i18n>深色</button>
+        </div>
+        <div class="dsh-pal-grid" id="dsh-rpal"></div>
+      </section>
+
+      <section class="dsh-rcard">
+        <div class="dsh-rcard-h"><span data-i18n>视觉与交互</span></div>
+        <label class="dsh-rtoggle">
+          <span><b data-i18n>毛玻璃模糊</b><small data-i18n>关闭后使用柔和纯色底，更省电</small></span>
+          <input type="checkbox" class="sw" id="dsh-sw-glass">
+        </label>
+        <label class="dsh-rtoggle">
+          <span><b data-i18n>自动折叠过程卡</b><small data-i18n>回答完成后自动收起思考与步骤卡</small></span>
+          <input type="checkbox" class="sw" id="dsh-sw-fold">
+        </label>
+      </section>
+    </div>
   </div>
 </aside>
 
@@ -442,14 +516,17 @@
             </div>
           </div>
           <div class="srow">
-            <div class="sl"><b data-i18n>外观</b><p data-i18n>原生、「求索」「逐月」「构成」或「拾色」配色</p></div>
-            <div class="sc"><span class="seg" id="seg-skin"><button data-sk="native" data-i18n>原生</button><button data-sk="qiusuo" data-i18n>求索</button><button data-sk="zhuyue" data-i18n>逐月</button><button data-sk="goucheng" data-i18n>构成</button><button data-sk="shise" data-i18n>拾色</button></span></div>
+            <div class="sl"><b data-i18n>外观</b><p data-i18n>「极光」毛玻璃与原生、「求索」「逐月」「构成」「拾色」配色</p></div>
+            <div class="sc"><span class="seg" id="seg-skin"><button data-sk="dsh" data-i18n>极光</button><button data-sk="native" data-i18n>原生</button><button data-sk="qiusuo" data-i18n>求索</button><button data-sk="zhuyue" data-i18n>逐月</button><button data-sk="goucheng" data-i18n>构成</button><button data-sk="shise" data-i18n>拾色</button></span></div>
           </div>
           <div class="srow">
             <div class="sl"><b data-i18n>深浅</b></div>
             <div class="sc"><span class="seg" id="seg-mode"><button data-md="auto" data-i18n>跟随系统</button><button data-md="light" data-i18n>浅</button><button data-md="dark" data-i18n>深</button></span>
               <!-- 真正的设置仍是这个下拉框（theme.js 读写它）；上面两组分段只是它的两半 -->
               <select id="set-theme" class="hidden">
+                <option value="dsh-auto" data-i18n>极光 · 跟随系统</option>
+                <option value="dsh-light" data-i18n>极光 · 浅色</option>
+                <option value="dsh-dark" data-i18n>极光 · 深色</option>
                 <option value="auto" data-i18n>原生 · 跟随系统</option>
                 <option value="light" data-i18n>原生 · 浅色</option>
                 <option value="dark" data-i18n>原生 · 深色</option>
@@ -467,6 +544,11 @@
                 <option value="ss-dark" data-i18n>拾色 · 深色</option>
               </select>
             </div>
+          </div>
+          <!-- 极光色板：六套精选色板，只在极光外观时显示 -->
+          <div class="srow" id="dsh-pal-row">
+            <div class="sl"><b data-i18n>极光色板</b><p data-i18n>六套协调主题色与环境氛围光</p></div>
+            <div class="sc"><div class="dsh-pal-grid" id="dsh-pal-sw"></div></div>
           </div>
           <!-- 构成浅色的纸色（0.6.2）：只在构成 · 浅色时显示，算色在 theme.js gcPaint -->
           <div class="srow gp-row" id="gp-row">

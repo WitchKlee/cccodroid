@@ -593,7 +593,7 @@
     if (!hasText && sys) return;
     const acts = document.createElement("div");
     acts.className = "msg-acts";
-    acts.innerHTML = (hasText ? actBtn("copy", t("复制")) + actBtn("share", t("转发")) : "") +
+    acts.innerHTML = (hasText ? actBtn("copy", t("复制")) + actBtn("share", t("转发")) + actBtn("card", t("分享卡")) : "") +
       (sys ? "" : (hasText ? actBtn("fork", t("从这里分叉")) + actBtn("mark", t("书签")) : "") + actBtn("del", t("删除")));
     acts.addEventListener("click", (e) => {
       const a = e.target.closest("button")?.dataset.a, text = getText();
@@ -603,6 +603,7 @@
         else if (navigator.share) navigator.share({ text }).catch(() => {});
         else copyText(text).then((ok) => toast(ok ? t("这里没有系统分享，已复制到剪贴板") : t("复制失败"), !ok));
       }
+      if (a === "card" && typeof openShareCard === "function") openShareCard(msgEl, text);
       if (a === "fork") forkFrom(msgEl);
       if (a === "mark") toggleMark(msgEl);
       if (a === "del") deleteMsg(msgEl, "bot");
@@ -923,6 +924,7 @@
         undot();
         if (!any && live && !aborted) bubble.innerHTML = '<p class="muted">' + t("（无输出）") + '</p>';
         replyActs(msgEl, () => blocks.filter((b) => b.kind === "text").map((b) => b.text.trim()).filter(Boolean).join("\n\n"));
+        if (typeof dshOnTurnFinish === "function") dshOnTurnFinish(msgEl, aborted, failed);
       },
       get empty() { return !any; },
       get ended() { return ended; },

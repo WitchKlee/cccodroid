@@ -32,18 +32,20 @@
 
 (function () {
   const LS = "ccapp.theme";
-  const MODES = ["auto", "light", "dark", "qs-auto", "qs-light", "qs-dark", "zy-auto", "zy-light", "zy-dark", "gc-auto", "gc-light", "gc-dark", "ss-auto", "ss-light", "ss-dark"];
-  const PREFIX = { native: "", qiusuo: "qs-", zhuyue: "zy-", goucheng: "gc-", shise: "ss-" };
-  const skinOf = (p) => (p.startsWith("qs-") ? "qiusuo" : p.startsWith("zy-") ? "zhuyue" : p.startsWith("gc-") ? "goucheng" : p.startsWith("ss-") ? "shise" : "native");
-  const modeOf = (p) => p.replace(/^(qs|zy|gc|ss)-/, "");
+  const LS_DSH_PAL = "cc.dsh.palette";
+  const LS_DSH_GLASS = "cc.dsh.glass";
+  const MODES = ["auto", "light", "dark", "dsh-auto", "dsh-light", "dsh-dark", "qs-auto", "qs-light", "qs-dark", "zy-auto", "zy-light", "zy-dark", "gc-auto", "gc-light", "gc-dark", "ss-auto", "ss-light", "ss-dark"];
+  const PREFIX = { dsh: "dsh-", native: "", qiusuo: "qs-", zhuyue: "zy-", goucheng: "gc-", shise: "ss-" };
+  const skinOf = (p) => (p.startsWith("dsh-") ? "dsh" : p.startsWith("qs-") ? "qiusuo" : p.startsWith("zy-") ? "zhuyue" : p.startsWith("gc-") ? "goucheng" : p.startsWith("ss-") ? "shise" : "native");
+  const modeOf = (p) => p.replace(/^(dsh|qs|zy|gc|ss)-/, "");
   // 状态栏 / 导航栏底色要和页面底色一致（壳那边也有一份同样的表：BrowserPane.bg）
-  const BAR = { native: { dark: "#1f1e1d", light: "#faf9f5" }, qiusuo: { dark: "#151517", light: "#ffffff" }, zhuyue: { dark: "#111111", light: "#ffffff" }, goucheng: { dark: "#151412", light: "#f3eee3" }, shise: { dark: "#141218", light: "#fdf7ff" } };   // 拾色的两格由 shisePaint 按种子色改写
+  const BAR = { dsh: { dark: "#0f121a", light: "#f4f6fb" }, native: { dark: "#1f1e1d", light: "#faf9f5" }, qiusuo: { dark: "#151517", light: "#ffffff" }, zhuyue: { dark: "#111111", light: "#ffffff" }, goucheng: { dark: "#151412", light: "#f3eee3" }, shise: { dark: "#141218", light: "#fdf7ff" } };   // 拾色与极光的两格分别由 shisePaint / dshPaint 按种子色改写
   const mq = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
   const app = () => (window.CCApp && typeof window.CCApp.nightMode === "function" ? window.CCApp : null);
 
-  let pref = "auto";
-  try { pref = localStorage.getItem(LS) || "auto"; } catch {}
-  if (!MODES.includes(pref)) pref = "auto";
+  let pref = "dsh-auto";
+  try { pref = localStorage.getItem(LS) || "dsh-auto"; } catch {}
+  if (!MODES.includes(pref)) pref = "dsh-auto";
 
   let sysDark = null;   // 壳推过来的系统状态；null = 没推过
   function systemDark() {
@@ -61,14 +63,16 @@
     const root = document.documentElement;
     if (root.dataset.theme !== name) root.dataset.theme = name;
     if (root.dataset.skin !== skin) root.dataset.skin = skin;
+    applyGlass();
+    dshPaint(skin);
     shisePaint(skin);
     gcPaint(skin);
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = BAR[skin][name];
     applyAccent(skin, name);
     const a = app();
-    // 先告诉壳风格，再让它换栏色 —— 栏色按风格取
-    if (a && typeof a.skinPref === "function") { try { a.skinPref(skin); } catch {} }
+    // 先告诉壳风格，再让它换栏色 —— 栏色按风格取；dsh 走 shise 的自定义 8 色通道，原生栏与浏览器窗格自动对齐色板
+    if (a && typeof a.skinPref === "function") { try { a.skinPref(skin === "dsh" ? "shise" : skin); } catch {} }
     if (a && typeof a.setBars === "function") { try { a.setBars(dark); } catch {} }
     // 外壳记下这个选择，下次启动的安装页 / 空白页照着上色（cccodroid 0.1.20 起有）；壳只认 auto/light/dark
     if (a && typeof a.themePref === "function") { try { a.themePref(mode); } catch {} }
@@ -109,8 +113,9 @@
   function accentPref() { try { const v = (JSON.parse(localStorage.getItem("cc.ui")) || {}).accent; return /^#[0-9a-f]{6}$/i.test(v || "") ? v.toLowerCase() : ""; } catch { return ""; } }
   /** 给定外观和深浅，算出实际用的三种颜色（设置页的色块预览也用它） */
   function accentFor(hex, skin, name) {
-    // 拾色：种子色推出来的主色就是强调色（设置页色块预览按这个画）
+    // 拾色 / 极光：种子色推出来的主色就是强调色（设置页色块预览按这个画）
     if (skin === "shise" && hex) { const T = shiseScheme(hex, name === "dark"); return { acc: T.accent, dim: T.dim, on: T.onAccent, soft: T.sc }; }
+    if (skin === "dsh" && hex) { const T = dshScheme(hex, name === "dark"); return { acc: T.accent, dim: T.dim, on: T.onAccent, soft: T.activeBg }; }
     const bg = BAR[skin][name], acc = readable(hex, bg, 4.5);
     const on = contrast("#ffffff", acc) >= contrast("#141414", acc) ? "#ffffff" : "#141414";
     return { acc, dim: mix(acc, bg, 0.45), on, soft: mix(acc, bg, lum(bg) > 0.4 ? 0.12 : 0.2) };
@@ -119,10 +124,10 @@
     let el = document.getElementById("user-accent");
     const hex = accentPref();
     let css = "";
-    if (skin === "shise") {
-      // 拾色的强调色就是种子色推出来的主色，变量表里已经有了；外壳那边照样交一份（加载动画、对话框用）
-      const a = app();
-      if (a && typeof a.accentPref === "function") { try { a.accentPref(SS.light.accent, SS.dark.accent); } catch {} }
+    if (skin === "shise" || skin === "dsh") {
+      // 拾色与极光的强调色直接由种子色推导，变量表里已经写好；外壳那边照样交一份（加载动画、对话框用）
+      const a = app(), src = skin === "dsh" ? DSH : SS;
+      if (a && typeof a.accentPref === "function" && src.light && src.dark) { try { a.accentPref(src.light.accent, src.dark.accent); } catch {} }
       if (el && el.textContent) el.textContent = "";
       return;
     }
@@ -266,6 +271,124 @@
     if (!el) { el = document.createElement("style"); el.id = "shise-vars"; document.head.appendChild(el); }
     if (el.textContent !== css) el.textContent = css;
   }
+
+  // ── 极光琉璃（DSH Glass）：六套精选色板 × 浅/深模式 × 环境氛围光 × 细腻毛玻璃表面 ──
+  const DSH_PALETTES = [
+    { id: "indigo", name: "靛蓝", seed: "#4b67b4", glow2: "#5aa7d8" },
+    { id: "ocean",  name: "雾海", seed: "#2d7aa8", glow2: "#58b8a8" },
+    { id: "sage",   name: "青苔", seed: "#368265", glow2: "#6ea8c9" },
+    { id: "rose",   name: "暮樱", seed: "#b85074", glow2: "#7d77c8" },
+    { id: "amber",  name: "暖琥", seed: "#b56e28", glow2: "#c97a63" },
+    { id: "slate",  name: "曜石", seed: "#536073", glow2: "#6b7d98" },
+  ];
+  const DSH = { key: "", light: null, dark: null };
+  let dshPal = "indigo";
+  try { const v = localStorage.getItem(LS_DSH_PAL); if (DSH_PALETTES.some((x) => x.id === v)) dshPal = v; } catch {}
+  let glassOn = true;
+  try { glassOn = localStorage.getItem(LS_DSH_GLASS) !== "0"; } catch {}
+
+  function applyGlass() {
+    const root = document.documentElement;
+    const v = glassOn ? "on" : "off";
+    if (root.dataset.glass !== v) root.dataset.glass = v;
+    if (root.dataset.dshPal !== dshPal) root.dataset.dshPal = dshPal;
+  }
+  function setGlass(on) {
+    glassOn = !!on;
+    try { localStorage.setItem(LS_DSH_GLASS, glassOn ? "1" : "0"); } catch {}
+    applyGlass();
+    document.dispatchEvent(new CustomEvent("cc:dsh", { detail: { key: "glass", value: glassOn } }));
+  }
+  function setDshPalette(id) {
+    if (!DSH_PALETTES.some((x) => x.id === id)) return;
+    dshPal = id;
+    try { localStorage.setItem(LS_DSH_PAL, id); } catch {}
+    if (skinOf(pref) !== "dsh") set("dsh-" + modeOf(pref));
+    else apply();
+    document.dispatchEvent(new CustomEvent("cc:dsh", { detail: { key: "palette", value: id } }));
+  }
+  function dshScheme(seed, dark, glow2Seed) {
+    const [, C, H] = oklch(seed);
+    const gray = C < 0.042;
+    const p = tones(H, gray ? 0.022 : Math.max(Math.min(C, 0.145), 0.105));
+    const s = tones(H, gray ? 0.012 : 0.042);
+    const n = tones(H, gray ? 0.008 : 0.014);
+    const nv = tones(H, gray ? 0.012 : 0.024);
+    const [, C2, H2] = oklch(glow2Seed || seed);
+    const g2 = tones(H2, gray ? 0.024 : Math.max(C2, 0.08));
+    const bg = dark ? n(5) : n(97.5);
+    const rawAcc = dark ? p(74) : p(42);
+    const acc = readable(rawAcc, bg, 4.6);
+    const onAcc = contrast("#ffffff", acc) >= contrast("#10141f", acc) ? "#ffffff" : "#10141f";
+    const accBtn = readable(dark ? p(70) : p(40), onAcc, 4.6);
+    const T = dark ? {
+      bg, bgTop: n(4.5), bgBot: n(8), bg2: n(10.5), bg3: n(15), bg4: n(20), line: nv(25),
+      fg: n(93), fg2: nv(78), fg3: nv(60), strong: n(99),
+      accent: acc, accentBtn: accBtn, onAccent: onAcc, dim: p(42), activeBg: s(22),
+      userBg: s(23), userLine: nv(33), sysBg: s(18), sysLine: nv(28),
+      codeBg: n(8.5), thinkBg: n(10.5), toolBg: n(11), toolLine: nv(24), toolSep: n(16), cmdBg: s(18),
+      moreBg: n(15), moreLine: nv(28), panel: n(10.5), inputBg: n(13),
+      ok: OK(78), warn: WARN(80), tool: TOOL(78), purple: PURP(78), err: ERR(78),
+      errBg: ERR(22), errLine: ERR(36), errFg: ERR(90), errBtn: ERR(78), onErr: ERR(16),
+      ctxWarn: WARN(80), ctxErr: ERR(78),
+      glow1: p(58), glow2: g2(60), cardHex: n(13), cardHiHex: n(18), chromeHex: n(9), sheetHex: n(9.5), hairHex: nv(52),
+    } : {
+      bg, bgTop: n(98.5), bgBot: n(94.8), bg2: "#ffffff", bg3: n(93.5), bg4: n(90), line: nv(85),
+      fg: n(12), fg2: nv(34), fg3: nv(48), strong: n(5),
+      accent: acc, accentBtn: accBtn, onAccent: onAcc, dim: p(76), activeBg: s(91),
+      userBg: s(90), userLine: nv(80), sysBg: s(93), sysLine: nv(83),
+      codeBg: n(94.5), thinkBg: n(96), toolBg: "#ffffff", toolLine: nv(86), toolSep: n(92), cmdBg: s(94),
+      moreBg: n(93), moreLine: nv(82), panel: "#ffffff", inputBg: "#ffffff",
+      ok: OK(40), warn: WARN(44), tool: TOOL(40), purple: PURP(40), err: ERR(40),
+      errBg: ERR(93), errLine: ERR(80), errFg: ERR(26), errBtn: ERR(40), onErr: "#ffffff",
+      ctxWarn: WARN(72), ctxErr: ERR(68),
+      glow1: p(74), glow2: g2(76), cardHex: "#ffffff", cardHiHex: "#ffffff", chromeHex: n(98.5), sheetHex: n(98), hairHex: nv(44),
+    };
+    T.dark = dark;
+    return T;
+  }
+  function dshCss(T) {
+    const rgba = (hex, a) => `rgba(${hex2rgb(hex).map((v) => Math.round(v * 255)).join(",")},${a})`;
+    const dk = T.dark;
+    return [
+      `--bg:${T.bg};--bg2:${T.bg2};--bg3:${T.bg3};--bg4:${T.bg4};--line:${T.line}`,
+      `--fg:${T.fg};--fg2:${T.fg2};--fg3:${T.fg3};--strong:${T.strong}`,
+      `--accent:${T.accent};--accent-btn:${T.accentBtn};--accent-dim:${T.dim};--on-accent:${T.onAccent};--active-bg:${T.activeBg}`,
+      `--ok:${T.ok};--err:${T.err};--warn:${T.warn};--tool:${T.tool};--purple:${T.purple};--ctx-warn:${T.ctxWarn};--ctx-err:${T.ctxErr}`,
+      `--bar-bg:${rgba(T.chromeHex, dk ? 0.78 : 0.76)};--bar-bg2:${rgba(T.chromeHex, dk ? 0.82 : 0.8)};--veil:${rgba(T.bg, 0.86)}`,
+      `--code-bg:${T.codeBg};--think-bg:${T.thinkBg};--more-bg:${T.moreBg};--more-line:${T.moreLine}`,
+      `--user-bg:${T.userBg};--user-line:${T.userLine};--sys-bg:${T.sysBg};--sys-line:${T.sysLine}`,
+      `--tool-bg:${T.toolBg};--tool-line:${T.toolLine};--tool-sep:${T.toolSep};--cmd-bg:${T.cmdBg}`,
+      `--err-bg:${T.errBg};--err-line:${T.errLine};--err-fg:${T.errFg};--err-btn:${T.errBtn};--on-err:${T.onErr}`,
+      `--panel:${T.panel};--input-bg:${T.inputBg};--radius:16px`,
+      `--shadow:${dk ? "rgba(0,0,0,.42)" : "rgba(18,28,56,.10)"};--scrim:${dk ? "rgba(4,7,14,.56)" : "rgba(15,23,42,.26)"}`,
+      `--dsh-bg-top:${T.bgTop};--dsh-bg-bot:${T.bgBot}`,
+      `--dsh-glow-1:${rgba(T.glow1, dk ? 0.16 : 0.14)};--dsh-glow-2:${rgba(T.glow2, dk ? 0.13 : 0.12)}`,
+      `--dsh-card:${rgba(T.cardHex, dk ? 0.72 : 0.78)};--dsh-card-hi:${rgba(T.cardHiHex, dk ? 0.84 : 0.90)}`,
+      `--dsh-chrome:${rgba(T.chromeHex, dk ? 0.76 : 0.78)};--dsh-sheet:${rgba(T.sheetHex, dk ? 0.84 : 0.86)}`,
+      `--dsh-hairline:${rgba(T.hairHex, dk ? 0.22 : 0.16)};--dsh-accent-soft:${rgba(T.accent, dk ? 0.16 : 0.11)}`,
+      `--dsh-user-glass:${rgba(T.userBg, dk ? 0.82 : 0.84)};--dsh-pill-bg:${rgba(T.cardHex, dk ? 0.64 : 0.72)}`,
+    ].join(";");
+  }
+  function dshPaint(skin) {
+    let el = document.getElementById("dsh-vars");
+    if (skin !== "dsh") { if (el && el.textContent) el.textContent = ""; return; }
+    const item = DSH_PALETTES.find((x) => x.id === dshPal) || DSH_PALETTES[0];
+    const seed = accentPref() || item.seed;
+    const key = seed + "|" + item.glow2;
+    if (key !== DSH.key || !DSH.light) {
+      DSH.key = key;
+      DSH.light = dshScheme(seed, false, item.glow2);
+      DSH.dark = dshScheme(seed, true, item.glow2);
+      BAR.dsh = { light: DSH.light.bg, dark: DSH.dark.bg };
+      const a = app(), pal = (T) => [T.bg, T.bg2, T.bg4, T.line, T.fg, T.fg2, T.fg3, T.accent].join(",");
+      if (a && typeof a.skinPal === "function") { try { a.skinPal(pal(DSH.light), pal(DSH.dark)); } catch {} }
+    }
+    const css = `html[data-skin="dsh"][data-theme="light"]{${dshCss(DSH.light)}}html[data-skin="dsh"][data-theme="dark"]{${dshCss(DSH.dark)}}`;
+    if (!el) { el = document.createElement("style"); el.id = "dsh-vars"; document.head.appendChild(el); }
+    if (el.textContent !== css) el.textContent = css;
+  }
+
   /** 外壳回到前台时发现壁纸主色变了就调这里（不是安卓 12+ 不会调） */
   function wall(hex) {
     try {
@@ -276,7 +399,7 @@
   }
 
   function set(v) {
-    if (!MODES.includes(v)) v = "auto";
+    if (!MODES.includes(v)) v = "dsh-auto";
     pref = v;
     try { localStorage.setItem(LS, v); } catch {}
     window.Theme.pref = v;
@@ -366,7 +489,20 @@
   document.addEventListener("DOMContentLoaded", applyType);
   applyType();
 
-  window.Theme = { pref, set, system, wall, wallSeed, apply, accentFor, gcPreview, gcPaperPref, get skin() { return skinOf(pref); }, setType, type: typePref, setFonts, fontOf, fam, get fonts() { return ufonts.slice(); }, get current() { return document.documentElement.dataset.theme; } };
+  window.Theme = {
+    pref, set, system, wall, wallSeed, apply, accentFor, gcPreview, gcPaperPref,
+    get skin() { return skinOf(pref); },
+    get mode() { return modeOf(pref); },
+    get dshPalettes() { return DSH_PALETTES.slice(); },
+    get dshPalette() { return dshPal; },
+    setDshPalette,
+    get glass() { return glassOn; },
+    setGlass,
+    get dshTokens() { return DSH[document.documentElement.dataset.theme === "dark" ? "dark" : "light"] || dshScheme(DSH_PALETTES[0].seed, document.documentElement.dataset.theme === "dark", DSH_PALETTES[0].glow2); },
+    setType, type: typePref, setFonts, fontOf, fam,
+    get fonts() { return ufonts.slice(); },
+    get current() { return document.documentElement.dataset.theme; },
+  };
   apply();
 })();
 

@@ -524,6 +524,7 @@
       ["files", closeFiles],
       ["popup", hidePopup],
       ["sheet", () => MO.hide($("sheet"), "mo-out-sheet")],
+      ["dsh-rdrawer", () => typeof dshCloseRightDrawer === "function" ? dshCloseRightDrawer() : $("dsh-rdrawer")?.classList.add("hidden")],
       ["drawer", closeDrawer],
       ["lin-prof", linProfBack],        // 脉络的剖面：一轮 → 一章 → 钻进来之前的会话 → 收起，再往下才关整页
       // 项目 / 定时任务的详情：先回列表，再关整页

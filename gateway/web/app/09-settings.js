@@ -1012,7 +1012,7 @@
   renderPaper();
 
   // ── 消息下面的按钮（0.4.20）：每个按钮点一下切显示 / 隐藏，藏法见 02-chat-view.js 的 paintActHide ──
-  const ACT_NAME = { copy: tk("复制"), resend: tk("重发"), rewind: tk("回退到这里"), mark: tk("书签"), del: tk("删除"), share: tk("转发"), fork: tk("从这里分叉") };
+  const ACT_NAME = { copy: tk("复制"), resend: tk("重发"), rewind: tk("回退到这里"), mark: tk("书签"), del: tk("删除"), share: tk("转发"), card: tk("分享卡"), fork: tk("从这里分叉") };
   function renderMsgActs() {
     const box = $("ma-list"); if (!box) return;
     const h = msgActsHidden();
