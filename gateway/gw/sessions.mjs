@@ -640,7 +640,7 @@ export async function routeSessions(req, res, u, p) {
 
     if (req.method === "DELETE" && !action) {
       if (!found) return sendJson(res, 404, { error: "not found" });
-      if (isSessionRewinding(id) || !(await idleRetired(id))) return sendJson(res, 409, { error: "busy", message: tz("这个会话正在生成中。") });
+      if (isSessionRewinding(id) || !(await idleRetired(id)) || isSessionRewinding(id)) return sendJson(res, 409, { error: "busy", message: tz("这个会话正在生成中。") });
       // 删除先进回收站（30 天内可恢复），彻底删除走 /api/trash/purge
       let r;
       try { r = trashSession(id); } catch (e) { return sendJson(res, 500, { error: e.message }); }
@@ -701,7 +701,7 @@ export async function routeSessions(req, res, u, p) {
     if (req.method === "POST" && (action === "delmsg" || action === "undodel")) {
       const b = JSON.parse((await readBody(req)) || "{}");
       // 只剩后台任务的 idle 轮：先结束它（否则永远 409），真正在生成的仍拒绝（195-A.3）
-      if (isSessionRewinding(id) || (action === "delmsg" && !(await idleRetired(id)))) return sendJson(res, 409, { ok: false, error: action, message: tz("这个会话正在生成中，等它答完再删。") });
+      if (isSessionRewinding(id) || (action === "delmsg" && !(await idleRetired(id))) || isSessionRewinding(id)) return sendJson(res, 409, { ok: false, error: action, message: tz("这个会话正在生成中，等它答完再删。") });
       let r;
       try { r = action === "delmsg" ? deleteMessage(id, String(b.userText || ""), Number(b.after) || 0, b.which === "user" ? "user" : "bot", String(b.uuid || "").slice(0, 64), String(b.replyUuid || "").slice(0, 64), Array.isArray(b.offs) ? b.offs.slice(0, 64).map(Number) : []) : undoDelete(id, String(b.undo || "")); }
       catch (e) { r = { ok: false, status: 500, message: e.message }; }
@@ -709,6 +709,7 @@ export async function routeSessions(req, res, u, p) {
     }
 
     if (req.method === "POST" && action === "fork") {
+      if (isSessionRewinding(id)) return sendJson(res, 409, { ok: false, error: "busy", message: tz("这个会话正在生成中。") });
       const b = JSON.parse((await readBody(req)) || "{}");
       let r;
       try { r = forkSession(id, String(b.userText || ""), Number(b.after) || 0, { uuid: String(b.uuid || "").slice(0, 64), latest: b.latest === true }); }

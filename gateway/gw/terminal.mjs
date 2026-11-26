@@ -146,7 +146,10 @@ function termNew({ cols, rows, login, cwd: want } = {}) {
   };
   child.stdout.on("data", (d) => out(t.dec.write(d)));
   child.stderr.on("data", (d) => out(d.toString()));     // 只有 ptyhost 自己的报错走这里
-  if (cwdNote) out(`\r\n[${tz("目录不存在：{dir}，已改用 {cwd}", { dir: cwdNote, cwd })}]\r\n`);
+  if (cwdNote) {
+    const safeNote = String(cwdNote).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    out(`\r\n[${tz("目录不存在：{dir}，已改用 {cwd}", { dir: safeNote, cwd })}]\r\n`);
+  }
   child.stdin.on("error", () => {});
   child.stdio[3]?.on("error", () => {});
   const ended = (code) => {
@@ -169,11 +172,11 @@ function termNew({ cols, rows, login, cwd: want } = {}) {
 
 // 订阅者读得太慢（WebView 在后台被冻住）而终端一直在出字：待发的超过 8MB 就断掉它，前端重连时拿回放环续上，
 // 别让一个冻住的连接把网关内存撑爆（审查 v0.5.20 02-004；事件总线同一规则见 bus.mjs）
-const SSE_MAX = 8 * 1024 * 1024;
+const SSE_MAX = 8 * 1024 * 1024, TERM_MAX_SUBS = 16;
 function sseSend(res, ev, data, t) {
   try {
     if (res.writableLength > SSE_MAX) { if (t) t.subs.delete(res); res.destroy(); return; }
-    res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.write(Buffer.from(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`));
   } catch {}
 }
 
@@ -228,8 +231,14 @@ async function handleTerm(req, res, p) {
     // 带上累计输出的字符数：界面重连时只补没画过的那一段，已有的回滚和历史不用清掉（195-H.1）
     sseSend(res, "replay", { data: t.buf, total: t.total });
     if (!t.alive) { sseSend(res, "exit", { code: t.code }); return res.end(); }
+    while (t.subs.size >= TERM_MAX_SUBS) {
+      const old = t.subs.values().next().value;
+      t.subs.delete(old);
+      try { old.destroy(); } catch {}
+    }
     t.subs.add(res);
-    const ka = setInterval(() => { try { res.write(": k\n\n"); } catch {} }, 25000);
+    const ka = setInterval(() => { try { res.write(Buffer.from(": k\n\n")); } catch {} }, 25000);
+    ka.unref?.();
     req.on("close", () => { clearInterval(ka); t.subs.delete(res); });
     return;
   }

@@ -269,7 +269,8 @@ export function deleteMessage(id, userText, after, which, uuid = "", replyUuid =
   }
   pruneEdits(id);
   const st = fs.statSync(found.file);
-  UNDO.set(id, { backup, size: st.size, mtime: st.mtimeMs });
+  UNDO.delete(id); UNDO.set(id, { backup, size: st.size, mtime: st.mtimeMs });
+  while (UNDO.size > 30) UNDO.delete(UNDO.keys().next().value);
   log(`删消息 ${id.slice(0, 8)}：第 ${best + 1} 轮的${which === "user" ? "提问" : "回复"}，${drop.size} 行`);
   return { ok: true, removed: drop.size, undo: backup, moved, size: st.size };
 }
@@ -284,9 +285,14 @@ export function undoDelete(id, backup) {
   if (st.size !== u.size || st.mtimeMs !== u.mtime) return { ok: false, status: 409, message: tz("删除之后会话又有了新内容，没法撤销。") };
   const dirty = checkSession(id, found.file);
   // 直接 copyFileSync 到活文件会先截断：写一半被杀/满盘会毁掉会话，而备份还在、size/mtime 校验却让重试被 409。
-  // 先抄到同目录临时文件，成功后再 rename 替换。
-  const tmp = found.file + ".undo-" + process.pid;
-  try { fs.copyFileSync(src, tmp); fs.renameSync(tmp, found.file); }
+  // 先抄到同目录临时文件、fsync 落盘后再 rename 替换。
+  const tmp = `${found.file}.undo-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  try {
+    fs.copyFileSync(src, tmp);
+    const fd = fs.openSync(tmp, "r+");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, found.file);
+  }
   catch (e) { try { fs.rmSync(tmp, { force: true }); } catch {} throw e; }
   lineageForget(id);
   resealAfterEdit(id, found.file, dirty);
@@ -314,7 +320,8 @@ export async function rewindFiles(sid, userUuid, dryRun) {
     const [cmd0, args0] = claudeCmd(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--resume", sid,
       "--settings", JSON.stringify({ cleanupPeriodDays: sessionRetention().days })]);
     const child = spawn(cmd0, args0, { cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"], detached: true });
-    let buf = "", done = false, err = "", exited = false, pendingRes = null, killTimer = null;
+    let buf = "", done = false, err = "", exited = false, pendingRes = null, killTimer = null, resealed = false;
+    const reseal = () => { if (!resealed && sf) { resealed = true; resealAfterEdit(sid, sf, dirty); } };
     const settle = (r) => {
       if (done) return;
       done = true;
@@ -323,14 +330,21 @@ export async function rewindFiles(sid, userUuid, dryRun) {
       resolve(r);
     };
     // 收到 control_response 后先结束 stdin 等进程退出并 resealAfterEdit 再返回，避免紧随其后的续聊撞上旧封条；
-    // 最多等 3 秒强杀，防止子进程挂死拖住请求
+    // 最多等 3 秒强杀并兜底释放 Promise，防止子孙进程占着管道永久锁死 REWIND_BUSY
     const finish = (r) => {
       if (done || pendingRes) return;
       pendingRes = r;
       clearTimeout(t);
       try { child.stdin.end(); } catch {}
-      if (exited) { if (sf) resealAfterEdit(sid, sf, dirty); settle(r); return; }
-      killTimer = setTimeout(() => { if (!exited) killTree(child); }, 3000);
+      if (exited) { reseal(); settle(r); return; }
+      killTimer = setTimeout(() => {
+        if (!exited) {
+          killTree(child);
+          try { child.stdout?.destroy(); child.stderr?.destroy(); } catch {}
+          reseal();
+          settle(pendingRes || { ok: false, error: tz("回退超时") });
+        }
+      }, 3000);
     };
     const t = setTimeout(() => finish({ ok: false, error: tz("回退超时") }), 60000);
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");   // 按流解码：多字节字符跨块不会被拆坏
@@ -344,14 +358,15 @@ export async function rewindFiles(sid, userUuid, dryRun) {
         if (r.subtype === "error") finish({ ok: false, error: String(r.error || "rewind failed") });
         else finish({ ok: true, ...(r.response || {}) });
       }
+      if (buf.length > 8 << 20) buf = buf.slice(-(4 << 20));
     });
-    child.stderr.on("data", (d) => { err += d; });
+    child.stderr.on("data", (d) => { err = (err + d).slice(-65536); });
     // spawn 失败（loader 缺失/EACCES/ENOMEM）只发 error：不接就是未捕获异常，整个网关退出
     child.on("error", (e) => { exited = true; settle({ ok: false, error: e.code || e.message }); });
     child.stdin.on("error", () => {});
     child.on("close", () => {
       exited = true;
-      if (sf) resealAfterEdit(sid, sf, dirty);
+      reseal();
       settle(pendingRes || { ok: false, error: err.trim().slice(-300) || "claude exited" });
     });
     child.stdin.write(JSON.stringify({ type: "control_request", request_id: "rw-" + Date.now(), request: { subtype: "rewind_files", user_message_id: userUuid, dry_run: !!dryRun } }) + "\n");
@@ -1040,7 +1055,10 @@ export function zipRead(buf, max = 512 * 1024 * 1024) {
   return zipReadCore(buf, max, zipFail);
 }
 /** 同 zipRead，但在 worker 线程里解：解压期间网关别的请求照常处理（F7，导入技能包用）。结果、报错与 zipRead 一致 */
-export function zipReadAsync(buf, max = 512 * 1024 * 1024) {
+const ZIP_WORKERS_MAX = 2, ZIP_WORKER_TIMEOUT = 60e3;
+let zipWorkersActive = 0;
+const zipWorkerQueue = [];
+function runZipWorker(buf, max) {
   return new Promise((resolve, reject) => {
     // 只把这个包的字节交过去：buf 可能是大块共用内存（Buffer 池）里的一段，拷成独立的一份再转移
     const own = new Uint8Array(buf.byteLength);
@@ -1049,14 +1067,35 @@ export function zipReadAsync(buf, max = 512 * 1024 * 1024) {
     try { w = new Worker(new URL("./zip-worker.mjs", import.meta.url), { workerData: { buf: own, max }, transferList: [own.buffer] }); }
     catch (err) { return reject(err); }
     let done = false;
-    w.once("message", (m) => {
+    const finish = (fn, val) => {
+      if (done) return;
       done = true;
+      clearTimeout(tm);
       w.terminate().catch(() => {});
-      if (m.files) resolve(m.files.map((f) => ({ name: f.name, data: Buffer.from(f.data.buffer, f.data.byteOffset, f.data.byteLength) })));
-      else reject(m.err.code ? zipFail(m.err.code, m.err.vars) : new Error(m.err.message));
+      fn(val);
+    };
+    const tm = setTimeout(() => finish(reject, new Error(tz("zip 解压超时"))), ZIP_WORKER_TIMEOUT);
+    tm.unref?.();
+    w.once("message", (m) => {
+      if (m.files) finish(resolve, m.files.map((f) => ({ name: f.name, data: Buffer.from(f.data.buffer, f.data.byteOffset, f.data.byteLength) })));
+      else finish(reject, m.err.code ? zipFail(m.err.code, m.err.vars) : new Error(m.err.message));
     });
-    w.once("error", (err) => { if (!done) { done = true; reject(err); } });
-    w.once("exit", (code) => { if (!done) { done = true; reject(new Error(tz("zip 目录损坏") + ` (worker ${code})`)); } });
+    w.once("error", (err) => finish(reject, err));
+    w.once("exit", (code) => finish(reject, new Error(tz("zip 目录损坏") + ` (worker ${code})`)));
+  });
+}
+export function zipReadAsync(buf, max = 512 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      zipWorkersActive++;
+      runZipWorker(buf, max).then(resolve, reject).finally(() => {
+        zipWorkersActive--;
+        const next = zipWorkerQueue.shift();
+        if (next) next();
+      });
+    };
+    if (zipWorkersActive < ZIP_WORKERS_MAX) start();
+    else zipWorkerQueue.push(start);
   });
 }
 

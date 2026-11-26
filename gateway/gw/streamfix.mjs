@@ -87,6 +87,7 @@ export function sseRepairer({ onSwallow, maxBuf = 8 << 20 } = {}) {
     }
     if (t === "message_start") { started = true; outTokens = j.message?.usage?.output_tokens || 0; }
     else if (t === "content_block_start") {
+      gotStop = false;
       open.add(j.index); kinds.set(j.index, j.content_block?.type);
     } else if (t === "content_block_stop") {
       open.delete(j.index);
@@ -142,6 +143,7 @@ export function sseRepairer({ onSwallow, maxBuf = 8 << 20 } = {}) {
 }
 
 function handle(req, res) {
+  res.on("error", () => { try { res.destroy(); } catch {} });
   const m = /^\/u\/([0-9a-f]{32})(\/.*)?$/.exec(req.url || "");
   const base = m && ROUTES.get(m[1]);
   if (base) { ROUTES.delete(m[1]); ROUTES.set(m[1], base); }
@@ -169,12 +171,14 @@ function handle(req, res) {
     const sse = isMsg && (ur.statusCode || 0) >= 200 && ur.statusCode < 300 && (enc === "identity" || enc === "") && /text\/event-stream/i.test(String(ur.headers["content-type"] || ""));
     sseRes = sse;
     if (!sse) {
+      if (res.destroyed || res.writableEnded) { ur.destroy(); return; }
       res.writeHead(ur.statusCode || 502, ur.headers); ur.pipe(res);
       // pipe 不管来源半路断：上游没收完就断了，下游也立刻断，claude 马上重试，不用干等自己的超时（#102 04-007）
       const cut = () => { if (!ur.complete) res.destroy(); };
       ur.on("aborted", cut); ur.on("error", cut); ur.on("close", cut);
       return;
     }
+    if (res.destroyed || res.writableEnded) { ur.destroy(); return; }
     const h = { ...ur.headers };
     delete h["content-length"]; delete h["content-encoding"]; delete h["transfer-encoding"];
     res.writeHead(ur.statusCode || 200, h);
@@ -183,7 +187,7 @@ function handle(req, res) {
     let ended = false;
     const end = () => {
       if (ended) return; ended = true;
-      if (res.destroyed) return;                        // 行缓冲超限已经主动断开（OBS-001），别再往坏掉的响应里写
+      if (res.destroyed || res.writableEnded) return;   // 行缓冲超限或已结束，别再往坏掉的响应里写
       const t = fix.finish({ complete: ur.complete });
       // 块还开着：真断了，原样交给 claude。连 message_start 都没有、上游又是正常收完的：不是我们认得的流，正文照常转完（FIND-021、200-9-06）
       if (t === null) { res.destroy(); return; }
@@ -192,6 +196,7 @@ function handle(req, res) {
     ur.setEncoding("utf8");
     // 下游（claude）读得慢就停读上游，收走了再续：以前不管 write 的返回值，上游有多少吸多少，全堆在响应缓冲里（0.6.9 审计 #193）
     ur.on("data", (d) => {
+      if (ended || res.destroyed || res.writableEnded) return;
       const o = fix.feed(d);
       // 不是 SSE 的正文一直不出现空行、攒过了上限：断开两头，claude 会按断流重试（OBS-001）
       if (fix.overflow) {
@@ -201,7 +206,7 @@ function handle(req, res) {
         return;
       }
       const w = o && writePaced(res, o);
-      if (w) { ur.pause(); w.then(() => { if (!res.destroyed) ur.resume(); }); }
+      if (w) { ur.pause(); w.then(() => { if (!ended && !res.destroyed && !res.writableEnded) ur.resume(); }); }
     });
     ur.on("end", end);
     ur.on("error", end);
@@ -209,7 +214,7 @@ function handle(req, res) {
     ur.on("close", end);
   });
   up.on("error", (e) => {
-    if (!res.headersSent) { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: `upstream: ${e.message}` } })); }
+    if (!res.headersSent && !res.destroyed && !res.writableEnded) { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: `upstream: ${e.message}` } })); }
     // SSE 的补尾要靠 ur 的 aborted/error/close：这里先 destroy 会把补出来的 message_delta/message_stop 丢掉
     else if (!sseRes) res.destroy();
   });

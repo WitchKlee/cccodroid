@@ -22,7 +22,7 @@ const EMPTY_TREE_256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74
 const GIT_RO = new Set(["status", "diff", "show", "log", "for-each-ref", "rev-parse", "remote", "branch"]);
 // safe.directory=*：全局那条已经撤了（P1-10），面板自己的调用照样要能开共享存储上没登记的仓库（/sdcard 上的属主是媒体 uid，
 // git 一律当「属主可疑」拒跑）。放开是安全的：只读命令已经把仓库配置中和掉，会执行仓库配置的操作先过 gitGate 让用户确认
-const GIT_PRE = ["-c", "safe.directory=*", "-c", "core.quotePath=false", "-c", "color.ui=false", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"];
+const GIT_PRE = ["-c", "safe.directory=*", "-c", "core.quotePath=false", "-c", "color.ui=false", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never", "-c", "submodule.recurse=false"];
 function gitArgs(args, tree = EMPTY_TREE) {
   if (!GIT_RO.has(args[0])) return [...GIT_PRE, ...args];
   const extra = args[0] === "diff" || args[0] === "show" || args[0] === "log" ? ["--no-ext-diff", "--no-textconv"] : [];
@@ -76,7 +76,7 @@ async function gitNeutral(cwd) {
 }
 // 仓库自己的配置（local / worktree，含它 include 进来的）里这些项会让提交、撤销、切分支、拉取推送执行命令。
 // git-lfs 装在仓库里时写的是固定的几行，放行
-const RISKY_KEY = /^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|gitproxy|askpass|hookspath|alternaterefscommand)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|protocol\.(.+\.)?allow|include\.path|includeif\..+\.path)$/;
+const RISKY_KEY = /^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|gitproxy|askpass|hookspath|alternaterefscommand)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|gpg\.ssh\.defaultkeycommand|submodule\.recurse|submodule\..+\.update|remote\..+\.(uploadpack|receivepack)|protocol\.(.+\.)?allow|include\.path|includeif\..+\.path)$/;
 const LFS_OK = new Set(["git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs filter-process"]);
 async function gitRisks(root) {
   const risks = [], fp = [], c = await gitConfigList(root);

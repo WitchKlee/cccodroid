@@ -640,10 +640,17 @@ export async function routeUsage(req, res, u, p) {
       return sendJson(res, 200, { ok: true });
     }
     // 导出目录被换成软链、或里面放了同名软链：不跟着写到别处（11-03 审查 L-1，同 profile.saveExport）
-    const writeExport = (name, data) => {
-      const base = process.env.CCAPP_SHARED && fs.existsSync(process.env.CCAPP_SHARED) ? process.env.CCAPP_SHARED : CFG.home;
+    // private: true 时强制落到应用私有目录 CFG.home/exports（Share.java 已直接支持 content:// 分享，不暴露到共享存储）
+    const writeExport = (name, data, { priv = false } = {}) => {
+      let base = CFG.home;
+      if (!priv && process.env.CCAPP_SHARED) {
+        try {
+          fs.accessSync(process.env.CCAPP_SHARED, fs.constants.W_OK);
+          base = process.env.CCAPP_SHARED;
+        } catch {}
+      }
       const dir = path.join(base, "exports");
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: priv ? 0o700 : 0o755 });
       if (fs.lstatSync(dir).isSymbolicLink()) return sendJson(res, 400, { error: "bad dir" });
       const file = path.join(dir, name);
       // 临时文件 + fsync + 换名：直接 O_TRUNC 写失败会把上一次的导出也毁掉（197-9.9）；权限 0600（199-3-02）。
@@ -652,17 +659,22 @@ export async function routeUsage(req, res, u, p) {
       if (!writeAtomic(file, data, { mode: 0o600 })) return sendJson(res, 500, { error: "write failed" });
       return sendJson(res, 200, { ok: true, file });
     };
-    // 月报图片：前端画好的 PNG 落到导出目录，再交给「保存到」/ 分享
+    const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const PNG_IEND = Buffer.from("IEND");
+    // 月报图片 / 对话分享卡：前端画好的 PNG 落到导出目录，再交给「保存到」/ 分享
     if (op === "card") {
       const name = String(b.name || ""), data = Buffer.from(String(b.data || ""), "base64");
-      if (!/^[\w.-]+\.png$/.test(name) || data.length < 100 || data.readUInt32BE(0) !== 0x89504e47) return sendJson(res, 400, { error: "bad image" });
-      return writeExport(name, data);
+      if (!/^[A-Za-z0-9][\w.-]{0,155}\.png$/.test(name) || data.length < 100
+        || !data.subarray(0, 8).equals(PNG_SIG) || data.lastIndexOf(PNG_IEND) < 8) {
+        return sendJson(res, 400, { error: "bad image" });
+      }
+      return writeExport(name, data, { priv: b.private === true });
     }
     // 导出 CSV：前端按本地时区汇总好的逐日表，落到同一个导出目录
     if (op === "csv") {
       const name = String(b.name || ""), text = String(b.text || "");
-      if (!/^[\w.-]+\.csv$/.test(name) || !text || text.length > 4e6) return sendJson(res, 400, { error: "bad csv" });
-      return writeExport(name, "\ufeff" + text);   // 带 BOM，表格软件才认得出中文
+      if (!/^[A-Za-z0-9][\w.-]{0,155}\.csv$/.test(name) || !text || text.length > 4e6) return sendJson(res, 400, { error: "bad csv" });
+      return writeExport(name, "\ufeff" + text, { priv: b.private === true });   // 带 BOM，表格软件才认得出中文
     }
     return sendJson(res, 404, { error: "unknown op" });
   }

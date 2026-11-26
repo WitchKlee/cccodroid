@@ -18,6 +18,7 @@ import { COMP_DIR, breathe, compRecord, compRepair, devkitIdentity } from "./com
 import { modInstalled, modRepair, modulesInfo } from "./modules.mjs";
 import { NEXT, readBody, sendJson } from "./http.mjs";
 import { privCall } from "./usage.mjs";
+import { writeAtomic } from "./statefile.mjs";
 
 const STATE = PREFIX ? path.join(CFG.home, ".cache", "cccodroid", "reconcile.json") : "";
 const CUSTOM_DIR = PREFIX ? path.join(CFG.home, ".cccodroid", "custom") : "";
@@ -109,6 +110,7 @@ const comp = (id) => ({ t: "comp", id }), mod = (id) => ({ t: "mod", id }), DEVK
 export async function reconcileNow() {
   const F = [];
   OWNED = await ownedPaths();
+  try {
   // k、fix 用 tz() 包着：不带变量时原样返回，只是让 i18n/scan.mjs 把它们收进词典
   const add = (key, level, k, v, fix, samples, act) => F.push({ key, level, k, v: v || null, fix: fix || "", ...(samples && samples.length ? { samples: samples.slice(0, 8) } : {}), act: act && actOk(act) ? act : null });
   const dk = devkitIdentity();
@@ -188,8 +190,8 @@ export async function reconcileNow() {
     for (const lib of r.libs || []) if (lib.startsWith(CUSTOM_DIR) && !exists(lib)) gone.push(lib);
     if (gone.length) add("custom-files:" + d, "error", tz("自定义组件「{id}」的程序或库不在了"), { id: r.name || d }, tz("到 扩展 → 自定义组件 删掉重新导入"), gone);
   }
-  OWNED = null;
   return { at: Date.now(), devkit: dk ? dk.sha256 || dk.tag || "" : "", findings: F };
+  } finally { OWNED = null; }
 }
 
 const levelRank = { error: 0, warn: 1, info: 2 };
@@ -198,23 +200,25 @@ const keysOf = (r) => (r ? r.findings.filter((f) => f.level !== "info").map((f) 
 /** 核一遍并落盘；error / warn 这一组变了才记账（每次启动都记同样的问题会把账本刷满） */
 export async function reconcileRun() {
   if (!PREFIX) return null;
-  if (busy) return last;
-  busy = true;
-  try {
-    const t0 = Date.now(), r = await reconcileNow(), prev = last;
-    r.ms = Date.now() - t0;
-    r.findings.sort((a, b) => levelRank[a.level] - levelRank[b.level]);
-    const bad = r.findings.filter((f) => f.level !== "info");
-    if (keysOf(r) !== keysOf(prev)) {
-      if (bad.length) ledger("verify", false, `状态对账：${bad.length} 处记录和磁盘对不上`, { samples: bad.slice(0, 5).map((f) => tzFill(f)) });
-      else if (prev && keysOf(prev)) ledger("verify", true, "状态对账：记录和磁盘重新对上了");
-    }
-    last = r;
-    try { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(r)); } catch {}
-    log(`[reconcile] ${r.ms} ms：${bad.length ? bad.map((f) => f.key).join(" ") : "无问题"}${r.findings.length > bad.length ? `（另有 ${r.findings.length - bad.length} 条提示）` : ""}`);
-    return r;
-  } catch (e) { log("[reconcile] 失败：" + (e && e.message)); return last; }
-  finally { busy = null; }
+  if (busy) return busy;
+  busy = (async () => {
+    try {
+      const t0 = Date.now(), r = await reconcileNow(), prev = last;
+      r.ms = Date.now() - t0;
+      r.findings.sort((a, b) => levelRank[a.level] - levelRank[b.level]);
+      const bad = r.findings.filter((f) => f.level !== "info");
+      if (keysOf(r) !== keysOf(prev)) {
+        if (bad.length) ledger("verify", false, `状态对账：${bad.length} 处记录和磁盘对不上`, { samples: bad.slice(0, 5).map((f) => tzFill(f)) });
+        else if (prev && keysOf(prev)) ledger("verify", true, "状态对账：记录和磁盘重新对上了");
+      }
+      last = r;
+      try { fs.mkdirSync(path.dirname(STATE), { recursive: true }); writeAtomic(STATE, JSON.stringify(r), { mode: 0o600 }); } catch {}
+      log(`[reconcile] ${r.ms} ms：${bad.length ? bad.map((f) => f.key).join(" ") : "无问题"}${r.findings.length > bad.length ? `（另有 ${r.findings.length - bad.length} 条提示）` : ""}`);
+      return r;
+    } catch (e) { log("[reconcile] 失败：" + (e && e.message)); return last; }
+    finally { busy = null; }
+  })();
+  return busy;
 }
 const tzFill = (f) => tz(f.k, f.v);
 const render = (f, lang) => ({ key: f.key, level: f.level, msg: tr(lang, tz(f.k, f.v)), fix: f.fix ? tr(lang, tz(f.fix)) : "", samples: f.samples || [], act: f.act ? f.act.t : "" });

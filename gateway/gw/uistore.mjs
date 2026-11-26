@@ -7,9 +7,10 @@ import path from "node:path";
 import { CFG, log } from "./config.mjs";
 import { NEXT, readBody, sendJson } from "./http.mjs";
 import { readSmallFile } from "./saferead.mjs";
+import { writeAtomic } from "./statefile.mjs";
 
 const FILE = path.join(CFG.home, "ccapp-ui.json");
-export const UI_KEYS = ["topbar", "navPins", "accent", "msgActs", "extImg", "gcPaper"];
+export const UI_KEYS = ["topbar", "navPins", "accent", "msgActs", "extImg", "gcPaper", "dshPalette", "dshGlass", "dshAutoFold"];
 const MAX = 16 * 1024;
 
 export function readUi() {
@@ -24,7 +25,7 @@ export function patchUi(patch) {
   }
   const s = JSON.stringify(cur);
   if (s.length > MAX) throw new Error("too large");
-  fs.writeFileSync(FILE + ".tmp", s); fs.renameSync(FILE + ".tmp", FILE);
+  if (!writeAtomic(FILE, s, { mode: 0o600 })) throw new Error("write failed");
   return cur;
 }
 

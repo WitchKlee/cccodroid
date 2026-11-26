@@ -590,7 +590,14 @@ export async function bridgeConfigStatus({ allowCorruptMapping = false } = {}) {
   }
 }
 
-export async function saveBridgeConfig(body) {
+let SAVE_BRIDGE_CHAIN = Promise.resolve();
+export function saveBridgeConfig(body) {
+  const run = SAVE_BRIDGE_CHAIN.catch(() => {}).then(() => saveBridgeConfigInner(body));
+  SAVE_BRIDGE_CHAIN = run.catch(() => {});
+  return run;
+}
+
+async function saveBridgeConfigInner(body) {
   let input, saved = false, release;
   try {
     input = validateInput(body);

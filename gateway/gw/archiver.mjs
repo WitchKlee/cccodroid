@@ -255,7 +255,9 @@ async function extractOne(file, list, e, out, password) {
   const lst = out + ".list";
   fs.writeFileSync(lst, e.path + "\n");
   const ws = fs.createWriteStream(out, { flags: "wx", mode: 0o644 });
-  let n = 0, over = false, outer = null, wsErr = null, curChild = null;
+  const limit = e.size > 0 ? Math.min(e.size + 1024, PREVIEW_MAX) : PREVIEW_MAX;
+  const outDir = path.dirname(out);
+  let n = 0, nextSpaceAt = 4 << 20, over = false, lowSpace = false, outer = null, wsErr = null, curChild = null;
   ws.on("error", (er) => {
     wsErr = er;
     if (curChild) try { curChild.kill("SIGKILL"); } catch {}
@@ -265,26 +267,39 @@ async function extractOne(file, list, e, out, password) {
     let r;
     const onStdout = (d, child) => {
       curChild = child;
-      if (wsErr || over) return;
+      if (wsErr || over || lowSpace) return;
       n += d.length;
-      if (n > e.size + 1024 && e.size > 0) {
+      if (n > limit) {
         over = true;
         try { child.kill("SIGKILL"); } catch {}
         if (outer) try { outer.kill(); } catch {}
         return;
       }
+      if (n >= nextSpaceAt) {
+        nextSpaceAt = n + (4 << 20);
+        try {
+          const st = fs.statfsSync(outDir);
+          if (st.bavail * st.bsize < (64 << 20)) {
+            lowSpace = true;
+            try { child.kill("SIGKILL"); } catch {}
+            if (outer) try { outer.kill(); } catch {}
+            return;
+          }
+        } catch {}
+      }
       if (!ws.write(d)) {
         child.stdout.pause();
-        ws.once("drain", () => { if (!child.stdout.destroyed && !over && !wsErr) child.stdout.resume(); });
+        ws.once("drain", () => { if (!child.stdout.destroyed && !over && !lowSpace && !wsErr) child.stdout.resume(); });
       }
     };
     if (list.kind === "tar2") {
       outer = spawnOuter(file);
-      r = await run7z(["e", "-so", "-si", "-ttar", "-spd", "-scsUTF-8", "-i@" + lst], { stdin: outer.stdout, onStdout });
-    } else r = await run7z(["e", "-so", "-y", "-spd", "-scsUTF-8", "-i@" + lst, file], { password: password ?? (e.enc ? "" : null), onStdout });
+      r = await run7z(["e", "-so", "-si", "-ttar", "-spd", "-scsUTF-8", "-i@" + lst], { stdin: outer.stdout, onStdout, timeoutMs: 120e3 });
+    } else r = await run7z(["e", "-so", "-y", "-spd", "-scsUTF-8", "-i@" + lst, file], { password: password ?? (e.enc ? "" : null), onStdout, timeoutMs: 120e3 });
     if (!wsErr) await new Promise((res) => { ws.once("error", () => res()); ws.end(res); });
     if (wsErr) throw wsErr;
-    if (over) throw new Error("entry larger than declared");
+    if (lowSpace) throw Object.assign(new Error("insufficient disk space"), { status: 507 });
+    if (over) throw Object.assign(new Error("entry larger than declared"), { status: 413 });
     if (wrongPw(r)) throw Object.assign(new Error("wrong password"), { status: 401, wrongPassword: true });
     if (r.code !== 0) throw new Error((r.err.trim().split("\n").pop() || `7-Zip exit ${r.code}`).slice(0, 200));
   } finally {

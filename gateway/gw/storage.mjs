@@ -337,8 +337,16 @@ export function scanStorage() {
 }
 
 /** 清第 1–3 类。tmp 可以带 picks（相对 $TMPDIR 的条目，界面上勾的），没带就按规则（7 天）。返回 { freed, n, skipped } */
-export async function cleanStorage(cats, { picks = null, auto = false, at = Date.now() } = {}) {
-  const now = Date.now(), open = openPaths(), live = await liveSessions();
+let CLEAN_CHAIN = Promise.resolve(), CLEAN_ACTIVE = 0;
+export function cleanStorage(cats, opts = {}) {
+  CLEAN_ACTIVE++;
+  const run = CLEAN_CHAIN.catch(() => {}).then(() => cleanStorageInner(cats, opts))
+    .finally(() => { CLEAN_ACTIVE = Math.max(0, CLEAN_ACTIVE - 1); });
+  CLEAN_CHAIN = run.catch(() => {});
+  return run;
+}
+async function cleanStorageInner(cats, { picks = null, auto = false, at = Date.now() } = {}) {
+  const now = Date.now();
   let freed = 0, n = 0, skipped = 0;
   const done = {};
   const rm = async (p, bytes, roots, cat) => {
@@ -348,6 +356,7 @@ export async function cleanStorage(cats, { picks = null, auto = false, at = Date
     if (((n + skipped) & 63) === 0) await new Promise((ok) => setImmediate(ok));
   };
   if (cats.includes("cache")) {
+    const open = openPaths();
     const dirs = cacheDirs();
     for (const it of await cacheCandidates(open, now)) {
       const c = dirs.find((x) => x.id === it.id);
@@ -356,6 +365,7 @@ export async function cleanStorage(cats, { picks = null, auto = false, at = Date
     }
   }
   if (cats.includes("tmp") && TMP()) {
+    const open = openPaths(), live = await liveSessions();
     const want = Array.isArray(picks) ? new Set(picks.map(String)) : null;
     for (const u of await tmpUnits(open, live, now)) {
       // 勾的也要过：有进程开着、会话还在跑的照样不删；没数完的不删
@@ -363,7 +373,10 @@ export async function cleanStorage(cats, { picks = null, auto = false, at = Date
       if (ok) await rm(u.path, u.bytes, [TMP()], "tmp");
     }
   }
-  if (cats.includes("junk")) for (const u of await junkUnits(open, live, now)) if (u.auto) await rm(u.path, u.bytes, JUNK_ROOTS(), "junk");
+  if (cats.includes("junk")) {
+    const open = openPaths(), live = await liveSessions();
+    for (const u of await junkUnits(open, live, now)) if (u.auto) await rm(u.path, u.bytes, JUNK_ROOTS(), "junk");
+  }
   const rec = { at, auto, freed, n, skipped, cats: done };
   st().history.push(rec); st().history = st().history.slice(-30);
   if (auto) st().lastAuto = at;
@@ -380,7 +393,7 @@ export async function autoCleanTick(now = Date.now()) {
   if (now - st().lastAuto < AUTO_EVERY[cfg.every]) return null;
   if (runList().length) return null;
   try { const q = await import("./queue.mjs"); if (q.QUEUE.length) return null; } catch {}
-  if (SCANNING) return null;
+  if (SCANNING || CLEAN_ACTIVE > 0) return null;
   return cleanStorage(["cache", "tmp", "junk"], { auto: true, at: now });
 }
 export function startAutoClean() {

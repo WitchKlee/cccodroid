@@ -15,23 +15,29 @@ export function zipReadCore(buf, max, fail) {
   let p = buf.readUInt32LE(e + 16);
   const out = [];
   for (let i = 0; i < n; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) throw fail("badDir");
+    if (p < 0 || p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw fail("badDir");
     const method = buf.readUInt16LE(p + 10), csize = buf.readUInt32LE(p + 20);
     const nlen = buf.readUInt16LE(p + 28), xlen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32);
     const lo = buf.readUInt32LE(p + 42);
     const usize = buf.readUInt32LE(p + 24);
+    if (p + 46 + nlen + xlen + clen > buf.length) throw fail("badDir");
     // Windows 上打的包可能用反斜杠分目录
     const name = buf.toString("utf8", p + 46, p + 46 + nlen).replace(/\\/g, "/");
     p += 46 + nlen + xlen + clen;
     if (name.endsWith("/")) continue;
+    if (lo + 30 > buf.length || buf.readUInt32LE(lo) !== 0x04034b50) throw fail("badDir");
     const ds = lo + 30 + buf.readUInt16LE(lo + 26) + buf.readUInt16LE(lo + 28);
+    if (ds > buf.length || ds + csize > buf.length) throw fail("badDir");
     const body = buf.subarray(ds, ds + csize);
     if (method !== 0 && method !== 8) throw fail("method", { name });
-    if ((total += usize) > max) throw tooBig();
+    // stored 条目先按实际载荷大小核上限，防止伪造 usize=0 绕过预检直接 Buffer.from 撑爆内存
+    const expect = method === 0 ? Math.max(usize, body.length) : usize;
+    if (total + expect > max) throw tooBig();
+    const remain = max - total;
     let data;
-    try { data = method === 8 ? zlib.inflateRawSync(body, { maxOutputLength: max - total + usize }) : Buffer.from(body); }
+    try { data = method === 8 ? zlib.inflateRawSync(body, { maxOutputLength: remain }) : Buffer.from(body); }
     catch (err) { if (err.code === "ERR_BUFFER_TOO_LARGE" || err.code === "ERR_OUT_OF_RANGE") throw tooBig(); throw err; }
-    total += data.length - usize;    // 目录里写的大小可能是假的：按实际解出来的算
+    total += data.length;    // 目录里写的大小可能是假的：按实际解出来的算
     if (total > max) throw tooBig();
     out.push({ name, data });
   }

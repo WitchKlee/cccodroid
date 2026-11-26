@@ -25,10 +25,10 @@ export function syncGitSafe(dirs) {
   const i = body.indexOf(BEGIN), j = body.indexOf(END);
   if (i >= 0 && j > i) body = body.slice(0, i) + body.slice(j + END.length).replace(/^\n/, "");
   const list = [...new Set(dirs.filter((d) => typeof d === "string" && path.isAbsolute(d)).map((d) => d.replace(/\/+$/, "")))]
-    // 换行、引号会把 git 配置写坏（也能借机塞别的配置项）：这种目录不列
-    .filter((d) => d && !/[\n\r"\\]/.test(d));
+    // 换行、引号、反斜杠与通配符 * 会破坏配置或放宽 safe.directory 范围；统一加引号防 # / ; 触发行内注释截断
+    .filter((d) => d && !/[\n\r"\\*]/.test(d));
   let block = "";
-  if (list.length) block = [BEGIN, "[safe]", ...list.flatMap((d) => [`\tdirectory = ${d}`, `\tdirectory = ${d}/*`]), END].join("\n") + "\n";
+  if (list.length) block = [BEGIN, "[safe]", ...list.flatMap((d) => [`\tdirectory = "${d}"`, `\tdirectory = "${d}/*"`]), END].join("\n") + "\n";
   const out = (body && !body.endsWith("\n") ? body + "\n" : body) + block;
   if (out === cur) return;
   try {

@@ -1,11 +1,15 @@
   // ── 极光琉璃（DSH UI）：自动折叠过程卡 / 右侧快捷抽屉与双侧手势 / 对话分享卡 ──
   const DSH_FOLD_LS = "cc.dsh.autoFold";
   let dshAutoFold = true;
-  try { dshAutoFold = localStorage.getItem(DSH_FOLD_LS) !== "0"; } catch {}
+  try {
+    const savedFold = typeof uiGet === "function" ? uiGet("dshAutoFold", DSH_FOLD_LS) : localStorage.getItem(DSH_FOLD_LS);
+    dshAutoFold = savedFold !== "0";
+  } catch {}
 
-  function dshSetAutoFold(on) {
+  function dshSetAutoFold(on, sync = true) {
     dshAutoFold = !!on;
     try { localStorage.setItem(DSH_FOLD_LS, dshAutoFold ? "1" : "0"); } catch {}
+    if (sync && typeof uiSet === "function") uiSet("dshAutoFold", dshAutoFold ? "1" : "0");
     const sw = $("dsh-sw-fold");
     if (sw && sw.checked !== dshAutoFold) sw.checked = dshAutoFold;
   }
@@ -61,7 +65,22 @@
     if (!window.Theme || !Theme.setDshPalette) return;
     if (uiGet("accent")) uiSet("accent", null);
     Theme.setDshPalette(id);
+    if (typeof uiSet === "function") uiSet("dshPalette", id);
     renderDshPalettes();
+  }
+
+  function dshApplyUiKey(key) {
+    if (typeof uiGet !== "function") return;
+    if (key === "dshPalette") {
+      const v = uiGet("dshPalette");
+      if (v && window.Theme && Theme.setDshPalette && Theme.dshPalette !== v) Theme.setDshPalette(v);
+    } else if (key === "dshGlass") {
+      const v = uiGet("dshGlass");
+      if ((v === "on" || v === "off") && window.Theme && Theme.setGlass && Theme.glass !== (v === "on")) Theme.setGlass(v === "on");
+    } else if (key === "dshAutoFold") {
+      const v = uiGet("dshAutoFold");
+      if (v === "0" || v === "1") dshSetAutoFold(v !== "0", false);
+    }
   }
 
   for (const id of ["dsh-pal-sw", "dsh-rpal"]) {
@@ -77,10 +96,16 @@
     Theme.set(pfx + b.dataset.md);
     renderDshPalettes();
   });
-  $("dsh-sw-glass")?.addEventListener("change", (e) => { if (window.Theme && Theme.setGlass) Theme.setGlass(e.target.checked); });
-  $("dsh-sw-fold")?.addEventListener("change", (e) => dshSetAutoFold(e.target.checked));
+  $("dsh-sw-glass")?.addEventListener("change", (e) => {
+    if (window.Theme && Theme.setGlass) Theme.setGlass(e.target.checked);
+    if (typeof uiSet === "function") uiSet("dshGlass", e.target.checked ? "on" : "off");
+  });
+  $("dsh-sw-fold")?.addEventListener("change", (e) => dshSetAutoFold(e.target.checked, true));
+  document.addEventListener("cc:ui", (e) => dshApplyUiKey(e.detail && e.detail.key));
   document.addEventListener("cc:dsh", renderDshPalettes);
   new MutationObserver(renderDshPalettes).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-skin", "data-glass", "data-dsh-pal"] });
+  dshApplyUiKey("dshPalette");
+  dshApplyUiKey("dshGlass");
   renderDshPalettes();
 
   // ── 右侧快捷面板抽屉（顶栏按钮 + 主区域左滑展开 / 抽屉右滑收起） ──
@@ -675,15 +700,22 @@
 
     const exportCard = async (mode) => {
       const d = new Date(), p = (x) => String(x).padStart(2, "0");
-      const name = `cccodroid-card-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.png`;
+      const rand = Math.random().toString(36).slice(2, 6);
+      const name = `cccodroid-card-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, "0")}-${rand}.png`;
       const dataUrl = cv.toDataURL("image/png");
-      let filePath = "";
+      const inApp = !!window.CCApp;
+      let filePath = "", errMsg = "";
       try {
-        const res = await post("/api/usage/card", { name, data: dataUrl.split(",")[1] });
-        filePath = res && res.file ? res.file : "";
-      } catch {}
+        const res = await post("/api/usage/card", { name, data: dataUrl.split(",")[1], private: true });
+        if (res && res.file) filePath = res.file;
+        else errMsg = (res && (res.message || res.error)) || "";
+      } catch (e) { errMsg = (e && e.message) || ""; }
       if (mode === "save") {
         if (filePath && canSaveAs()) return saveAs(filePath, "image/png");
+        if (inApp) {
+          toast(filePath ? t("已保存到导出目录：{name}", { name }) : (errMsg ? t("保存图片失败：{msg}", { msg: errMsg }) : t("保存图片失败")), !filePath);
+          return;
+        }
         const a = document.createElement("a");
         a.href = dataUrl;
         a.download = name;
@@ -695,7 +727,13 @@
         try {
           const j = await post("/api/app/share_file", { path: filePath, mime: "image/png" });
           if (j && j.ok) return;
-        } catch {}
+          errMsg = (j && (j.message || j.error)) || errMsg;
+        } catch (e) { errMsg = (e && e.message) || errMsg; }
+      }
+      if (inApp) {
+        if (filePath && canSaveAs()) return saveAs(filePath, "image/png");
+        toast(errMsg ? t("分享图片失败：{msg}", { msg: errMsg }) : t("分享图片失败"), true);
+        return;
       }
       if (navigator.canShare) {
         try {

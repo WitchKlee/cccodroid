@@ -49,8 +49,10 @@ const officeJobs = new Map();
 // 刚转好的那份就找不到了（#145-3）。POST 回执把 key 带给前端，GET 认这张表里同一个文件的 key；只留最近几十条
 const officeDone = new Map();
 let officeQ = Promise.resolve();
+const OFFICE_MAX_INPUT = 128 * 1024 * 1024;
 function officePdf(file) {
   const st = fs.statSync(file);
+  if (st.size > OFFICE_MAX_INPUT) return Promise.reject(new Error(tz("文档太大（超过 128 MB），无法转换")));
   const key = officeKey(file, st), out = path.join(OFFICE_DIR, key + ".pdf");
   if (fs.existsSync(out)) { try { const n = new Date(); fs.utimesSync(out, n, n); } catch {} return Promise.resolve(out); }
   if (officeJobs.has(key)) return officeJobs.get(key);
@@ -178,7 +180,14 @@ export async function routeOffice(req, res, u, p) {
     return sendJson(res, 200, { have: false, install: officeInstall() });
   }
   if (p === "/api/office/pdf") {
-    const r = safeFilePath(req.method === "GET" ? u.searchParams.get("path") : JSON.parse((await readBody(req)) || "{}").path);
+    if (req.method !== "GET" && req.method !== "POST") return sendJson(res, 405, { error: "method" });
+    let rawPath;
+    if (req.method === "GET") rawPath = u.searchParams.get("path");
+    else {
+      try { rawPath = JSON.parse((await readBody(req)) || "{}").path; }
+      catch { return sendJson(res, 400, { error: "bad json" }); }
+    }
+    const r = safeFilePath(rawPath);
     if (r.error) return sendJson(res, r.status || 404, { error: r.error });
     if (req.method === "GET") {
       const k = u.searchParams.get("k") || "";
@@ -188,7 +197,14 @@ export async function routeOffice(req, res, u, p) {
       // PDF 也要支持 Range：阅读器按需取页，以前只能整份下载（195-C.2）
       const rg = rangeOf(req.headers.range, st.size);
       if (rg && rg.bad) { res.writeHead(416, { "content-range": `bytes */${st.size}` }); return res.end(); }
-      const head = { "content-type": "application/pdf", "content-length": rg ? rg.end - rg.start + 1 : st.size, "accept-ranges": "bytes", "cache-control": "no-store" };
+      const head = {
+        "content-type": "application/pdf",
+        "content-length": rg ? rg.end - rg.start + 1 : st.size,
+        "accept-ranges": "bytes",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+      };
       if (rg) head["content-range"] = `bytes ${rg.start}-${rg.end}/${st.size}`;
       res.writeHead(rg ? 206 : 200, head);
       const rs = fs.createReadStream(out, rg ? { start: rg.start, end: rg.end } : undefined);

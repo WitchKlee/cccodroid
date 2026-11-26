@@ -166,6 +166,7 @@ export async function routeSettings(req, res, u, p) {
             const np = clearFollowingModels(), nt = clearFollowingTaskModels();
             if (np || nt) log(`换接口：清掉 ${np} 个项目、${nt} 个定时任务里旧接口的模型名`);
             applyProvider();
+            if (PROVIDER.login) { import("./claude.mjs").then((m) => m.clearKeyCache(PROVIDER.id, true)).catch(() => {}); }
             // 上游热切 —— 不重启桥，也就没有断流窗口
             await setBridgeUpstream(CFG.upstream);
           } finally { switched(); }

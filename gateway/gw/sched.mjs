@@ -803,11 +803,18 @@ export async function routeSched(req, res, u, p) {
     const b = await body();
     const i = DB.missed.findIndex((m) => m.taskId === b.taskId && (!b.at || m.at === b.at));
     if (i < 0) return sendJson(res, 404, { error: "not missed" });
-    const m = DB.missed.splice(i, 1)[0]; save();
+    const missed0 = DB.missed.slice();
+    const m = DB.missed.splice(i, 1)[0];
     const t = byId(m.taskId);
+    const prevSkip = t ? { skipNext: t.skipNext, skipAt: t.skipAt } : null;
     // 只有「跳过」标记早于这次错过时才消费；用户是在错过卡出现之后才设的跳过，要留给下一次计划
-    if (t && t.skipNext && (!t.skipAt || t.skipAt <= m.at)) { t.skipNext = false; t.skipAt = 0; save(); }
-    if (t && b.act === "run") fire(t, { reason: "manual" });   // 人点的补跑，不是 tick 自动补跑
+    if (t && t.skipNext && (!t.skipAt || t.skipAt <= m.at)) { t.skipNext = false; t.skipAt = 0; }
+    if (!save()) {
+      DB.missed = missed0;
+      if (t && prevSkip) { t.skipNext = prevSkip.skipNext; t.skipAt = prevSkip.skipAt; }
+      return sendJson(res, 500, { ok: false, error: "write_failed", message: tz("没保存上：存储满了或没有权限") });
+    }
+    if (t && b.act === "run") fire(t, { reason: "manual" }).catch((e) => log(`⏰ 补跑「${t.name}」异常：${e && e.message || e}`));   // 人点的补跑，不是 tick 自动补跑
     else if (t) addRun({ taskId: t.id, at: m.at, st: "skip", msg: tz("错过了，没补跑") });
     return sendJson(res, 200, { ok: true });
   }
@@ -846,6 +853,7 @@ export async function routeSched(req, res, u, p) {
     const tasks0 = DB.tasks, missed0 = DB.missed, pending = DB.pending;
     DB.tasks = DB.tasks.filter((x) => x.id !== t.id); DB.missed = DB.missed.filter((x) => x.taskId !== t.id); dropPending(t);
     if (!save()) { DB.tasks = tasks0; DB.missed = missed0; DB.pending = pending; pushNext(); return sendJson(res, 500, { ok: false, error: "write_failed", message: tz("没保存上：存储满了或没有权限") }); }
+    NULL_AT.delete(t.id);
     log(`⏰ 删除定时任务「${t.name}」`);
     return sendJson(res, 200, { ok: true });
   }
@@ -854,7 +862,9 @@ export async function routeSched(req, res, u, p) {
     // 同一任务手动跑还没结束（在排队或在跑）就别再起一次：连点会重复执行、重复花钱（审查 E05 / v0.5.3 B5）
     if (MANUAL.has(t.id) || runningNow().some((r) => r.taskId === t.id)) return sendJson(res, 409, { error: tz("这个任务已经在跑了") });
     MANUAL.add(t.id);
-    const go = fire(t, { reason: "manual", trial: !!b.trial }).finally(() => MANUAL.delete(t.id));
+    const go = fire(t, { reason: "manual", trial: !!b.trial })
+      .catch((e) => { log(`⏰ 手动运行「${t.name}」异常：${e && e.message || e}`); return null; })
+      .finally(() => MANUAL.delete(t.id));
     // 有对话在跑时 fire 会排队等最多 30 分钟：别让请求一直挂着，先回「已排队」
     const item = await Promise.race([go, new Promise((r) => setTimeout(() => r("queued"), 3000))]);
     if (item === "queued") return sendJson(res, 200, { ok: true, queued: true });

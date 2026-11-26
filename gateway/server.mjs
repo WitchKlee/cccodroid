@@ -148,8 +148,9 @@ const server = http.createServer(async (req, res) => {
 
     return sendJson(res, 404, { error: "not found" });
   } catch (e) {
+    const code = Number.isInteger(e?.status) && e.status >= 400 && e.status < 600 ? e.status : 500;
     log(`请求处理异常 ${p}: ${e.stack || e.message}`);
-    if (!res.headersSent) sendJson(res, 500, { error: String(e.message || e) });
+    if (!res.headersSent) sendJson(res, code, { error: String(e.message || e) });
     else res.end();
   }
 });

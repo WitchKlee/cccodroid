@@ -10,7 +10,7 @@ import { ensureShell, killTree } from "./claude.mjs";
 import { markChild, unmarkChild } from "./components.mjs";
 import { onShutdown } from "./crashguard.mjs";
 
-const NEED = { merge: ["qpdf"], extract: ["qpdf"], split: ["qpdf"], rotate: ["qpdf"], compress: ["pdf-shrink", "gs"], images: ["qpdf", "pdftoppm"] };
+const NEED = { merge: ["qpdf"], extract: ["qpdf"], split: ["qpdf"], rotate: ["qpdf"], compress: ["pdf-shrink", "gs"], images: ["qpdf", "pdfinfo", "pdftoppm"] };
 const MAX_INPUT = 256 * 1024 ** 2, MAX_OUTPUT = 512 * 1024 ** 2, MAX_PAGES = 1000;
 const JOBS = new Map();
 const fail = (code, status = 400) => { throw Object.assign(new Error(code), { code, status }); };
@@ -27,10 +27,10 @@ export const pdfToolsInfo = () => ({ operations: Object.fromEntries(Object.entri
 /** 不把用户输入直接拼给 qpdf：只收升序的十进制页码/范围，展开后再交给工具。 */
 // 转图片是否要 -scale-to 封顶：按 pdfinfo 的页面尺寸与所选分辨率算出栅格长边，超过 2048 才封。
 // poppler 的 -scale-to 是「缩放进框」（含放大），小页面会被无谓放大、低分辨率档一起失真，所以只在真超限时用。
-export function pdfImageCap(infoText, dpi) {
-  const m = /^Page size:\s+([\d.]+)\s*x\s*([\d.]+)/m.exec(infoText || "");
-  if (!m) return true; // 解析不到就保守封顶：防巨幅位图优先
-  return Math.max(Number(m[1]), Number(m[2])) * dpi / 72 > 2048;
+export function pdfImageCap(infoText, dpi, expectedPages = 1) {
+  const matches = [...String(infoText || "").matchAll(/^Page(?:\s+\d+)?\s+size:\s+([\d.]+)\s*x\s*([\d.]+)/gm)];
+  if (matches.length < (expectedPages || 1)) return true; // 解析不到或页数不全就保守封顶：防巨幅位图优先
+  return matches.some((m) => Math.max(Number(m[1]), Number(m[2])) * dpi / 72 > 2048);
 }
 export function pdfPages(text, count) {
   if (!Number.isSafeInteger(count) || count < 1 || count > MAX_PAGES) fail("page-limit");
@@ -140,9 +140,9 @@ async function processPdf(j, b) {
     await q(["--empty", "--pages", inputs[0], selected.join(","), "--", selection]);
     // 输出长边封顶：伪造的巨幅页面也不能让手机按全尺寸分配位图。
     // pdfinfo 与 pdftoppm 同包，这里先按所选分辨率算栅格长边，超了才加 -scale-to。
-    const info = await run(j, "pdfinfo", [selection]);
+    const info = await run(j, "pdfinfo", ["-f", "1", "-l", String(selected.length), selection]);
     const args = ["-r", String(b.dpi)];
-    if (pdfImageCap(info, b.dpi)) args.push("-scale-to", "2048");
+    if (pdfImageCap(info, b.dpi, selected.length)) args.push("-scale-to", "2048");
     args.push(b.format === "jpeg" ? "-jpeg" : "-png", selection, path.join(out, "page"));
     await run(j, "pdftoppm", args);
   }
@@ -213,10 +213,14 @@ export function startPdfJob(b) {
   const quota = setInterval(() => {
     try {
       let bytes = 0;
+      const statSize = (p) => {
+        try { const st = fs.lstatSync(p); return st.isFile() ? st.size : 0; }
+        catch (e) { if (e.code === "ENOENT") return 0; throw e; }
+      };
       const out = path.join(j.work, "output");
-      if (fs.existsSync(out)) for (const name of fs.readdirSync(out)) bytes += fs.lstatSync(path.join(out, name)).size;
+      if (fs.existsSync(out)) for (const name of fs.readdirSync(out)) bytes += statSize(path.join(out, name));
       // pdf-shrink 在 TMPDIR 里先写临时 PDF，成功后才移动到 output，不能漏算这段磁盘占用。
-      for (const name of fs.readdirSync(j.work)) if (!/^input-\d+\.pdf$/.test(name) && name !== "selection.pdf" && fs.lstatSync(path.join(j.work, name)).isFile()) bytes += fs.lstatSync(path.join(j.work, name)).size;
+      for (const name of fs.readdirSync(j.work)) if (!/^input-\d+\.pdf$/.test(name) && name !== "selection.pdf") bytes += statSize(path.join(j.work, name));
       if (bytes > MAX_OUTPUT) stop(j, "output-limit");
       const space = fs.statfsSync(j.work);
       if (space.bavail * space.bsize < 64 * 1024 ** 2) stop(j, "ENOSPC");

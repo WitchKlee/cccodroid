@@ -72,6 +72,8 @@ export function safeFilePath(p) {
   if (st.isDirectory()) return { error: "is a directory", status: 400 };
   // 只交普通文件：/dev/zero 这类设备读不完，管道会一直挂着（/proc 里的伪文件 fstat 也报普通文件，上面按路径拦）
   if (!st.isFile()) return { error: "not a regular file", status: 400 };
+  // 工作区与应用私有目录同分区：拦截硬链接（nlink > 1），与 Share.java 保持一致，防借硬链接跨目录读凭据
+  if (zoneOf(real) === "workspace" && st.nlink > 1) return { error: "forbidden", status: 403 };
   // dev/ino 供调用方打开后 fstat 复核：核完到打开之间文件被换成另一个 inode 就认得出来（MIG-33）
   return { file: real, size: st.size, mtime: st.mtimeMs, dev: st.dev, ino: st.ino };
 }

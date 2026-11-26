@@ -8,7 +8,7 @@ import { MODEL_ID_RE, dropModelCache, extraModelsOf, normalizeModels } from "./m
 import { RUNS } from "./runs.mjs";
 import { NEXT, fetchText, readBody, sendJson } from "./http.mjs";
 import { readSmallFile } from "./saferead.mjs";
-import { isObj, loadState, saveState } from "./statefile.mjs";
+import { isObj, loadState, saveState, stateUnread } from "./statefile.mjs";
 import { onShutdown } from "./crashguard.mjs";
 
 // ── 厂商配置（不写死任何一家）─────────────────────────────────────────
@@ -536,6 +536,10 @@ function loadProviders() {
   return { active, providers };
 }
 function saveProvidersRaw() {
+  if (stateUnread(PROVIDERS_FILE)) {
+    let gone = false; try { fs.lstatSync(PROVIDERS_FILE); } catch (e) { gone = e.code === "ENOENT"; }
+    if (!gone) throw new Error(tz("厂商配置文件上次读取失败且未留底，拒绝覆盖"));
+  }
   // 随机、独占且不跟随链接的临时文件；旧固定 .tmp 或碰撞文件都不能接收凭据。
   const temp = PROVIDERS_FILE + "." + crypto.randomBytes(12).toString("hex") + ".tmp";
   let fd, created = false;
@@ -693,6 +697,9 @@ export function upsertProvider(id, b, prepare) {
     throw error;
   }
   if (id === PROVIDER.id) applyProvider();
+  if (keyCleared || b.clearKey || !cur.apiKey) {
+    import("./claude.mjs").then((m) => m.clearKeyCache(id, id === PROVIDER.id)).catch(() => {});
+  }
   dropModelCache();   // 会话可能钉在不是全局的这家上：哪家改了都清，免得清单/窗口还是旧的
   log(`[provider] 已保存 ${id}${"apiKey" in b && str(b.apiKey) ? "（含密钥）" : ""}`);
   return { ok: true, id, provider: providerView(id, PROVIDERS_CFG.providers[id]), ...(keyCleared ? { keyCleared: true } : {}),
@@ -1179,8 +1186,9 @@ export async function routeProviders(req, res, u, p) {
     const previous = PROVIDERS_RAW.providers[id];
     if (!PRESETS[id] && !previous) return sendJson(res, 404, { error: "unknown provider" });
     const wasActive = id === PROVIDER.id;   // 在 applyProvider() 换掉当前厂商之前记下
-    // 预置厂商删不掉，只清空用户字段（密钥等）；自定义的整条删掉
-    delete PROVIDERS_RAW.providers[id];
+    // 预置厂商删不掉，只清空用户字段（密钥等）；对内置兜底 deepseek 留空对象保持 explicit=true，防止从旧配置/环境变量复活已删 Key；自定义的整条删掉
+    if (PRESETS[id] && id === BUILTIN_PROVIDER.id) PROVIDERS_RAW.providers[id] = {};
+    else delete PROVIDERS_RAW.providers[id];
     const resetSettings = !PRESETS[id] && SETTINGS.provider === id;
     const settingsOld = resetSettings ? { provider: SETTINGS.provider, model: SETTINGS.model } : null;
     if (resetSettings) { SETTINGS.provider = null; SETTINGS.model = null; }

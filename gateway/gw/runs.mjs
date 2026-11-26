@@ -47,7 +47,7 @@ function dropFlag() {
 }
 
 function syncFlag() {
-  flagTimer = null;
+  if (flagTimer) { clearTimeout(flagTimer); flagTimer = null; }
   const want = wantOn;
   const ok = want ? writeAtomic(RUN_FLAG, RUN_PID, { mode: 0o600 }) : dropFlag();
   if (ok) { flagOn = want; flagTries = 0; return; }
@@ -56,6 +56,7 @@ function syncFlag() {
   flagOn = null;
   const ms = Math.min(30000, 500 * (1 << Math.min(flagTries++, 6)));
   flagTimer = setTimeout(guarded("同步 .run-active", syncFlag), ms);
+  flagTimer.unref?.();
 }
 
 export const runFlag = (on) => {

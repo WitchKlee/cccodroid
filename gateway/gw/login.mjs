@@ -9,6 +9,7 @@ import { providerById } from "./providers.mjs";
 import { NEXT, readBody, sendJson } from "./http.mjs";
 import { toFront } from "./local.mjs";
 import { RATE_LIMITS, clearRateLimits } from "./stream.mjs";
+import { onShutdown } from "./crashguard.mjs";
 
 // ── 账户登录（OAuth 全程由 claude 自己完成；网关只转递地址，不碰凭据）────────
 //
@@ -23,6 +24,7 @@ import { RATE_LIMITS, clearRateLimits } from "./stream.mjs";
 //         条款要求登录走 Anthropic 自己的流程、开发者不得经手凭据，所以拿掉了。
 let LOGIN = null;
 const LOGIN_DIR = path.join(CFG.home, ".cache", "ccapp-login");
+onShutdown("login", () => { if (LOGIN && LOGIN.child && LOGIN.child.exitCode === null) try { killTree(LOGIN.child); } catch {} });
 
 function authEnv() {
   const env = claudeEnv();
@@ -60,33 +62,38 @@ async function loginStart(flag) {
   if (blocked) return { ok: false, message: blocked };
   if (LOGIN && LOGIN.child.exitCode === null) try { killTree(LOGIN.child); } catch {}
   fs.mkdirSync(LOGIN_DIR, { recursive: true });
-  const urlFile = path.join(LOGIN_DIR, "url");
-  const browser = path.join(LOGIN_DIR, "browser.sh");
+  const nonce = Date.now().toString(36) + "-" + Math.random().toString(16).slice(2, 8);
+  const urlFile = path.join(LOGIN_DIR, "url-" + nonce);
+  const browser = path.join(LOGIN_DIR, "browser-" + nonce + ".sh");
   try { fs.unlinkSync(urlFile); } catch {}
   fs.writeFileSync(browser, '#!/system/bin/sh\nprintf "%s\\n" "$1" > "' + urlFile + '"\n', { mode: 0o700 });
   const env = loginBrowserEnv(authEnv(), LOGIN_DIR, browser);
-  const child = spawn(PATHS.claudeLoader, claudeArgv(["auth", "login", flag]), { cwd: CFG.home, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(PATHS.claudeLoader, claudeArgv(["auth", "login", flag]), { cwd: CFG.home, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const L = LOGIN = { child, out: "", startedAt: Date.now(), done: false, ok: false, flag, urlFile };
+  const cleanupFiles = () => { try { fs.unlinkSync(browser); } catch {} try { fs.unlinkSync(urlFile); } catch {} };
   // 登录不完成不能永久挂：设备码流程最多 15 分钟，到点收掉子进程并把状态结掉（0.6.9 审计 195-R.9）
   const expire = setTimeout(() => {
     if (L.done) return;
-    L.done = true; L.ok = false; L.out += "\n" + tz("登录超时（15 分钟）");
+    L.done = true; L.ok = false; L.out = (L.out + "\n" + tz("登录超时（15 分钟）")).slice(-65536);
     try { killTree(child); } catch {}
+    cleanupFiles();
     log("登录：超时");
   }, 15 * 60e3);
   expire.unref?.();
-  const onData = (d) => { L.out += String(d); };
+  const onData = (d) => { if (L.out.length < 65536) L.out = (L.out + String(d)).slice(-65536); };
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");   // 按流解码：多字节字符跨块不会被拆坏
   child.stdout.on("data", onData); child.stderr.on("data", onData);
   // loader 起不来（缺失/无权限/EAGAIN）只发 error：不接会把整个网关带走（#102 04-005）。runAuth 早就接了，这里补上
   child.on("error", (e) => {
     clearTimeout(expire);
+    cleanupFiles();
     if (L.done) return;
     L.done = true; L.ok = false; L.out += "\n" + (e.code || e.message);
     log("登录：没起来（" + (e.code || e.message) + "）");
   });
   child.on("close", (code) => {
     clearTimeout(expire);
+    cleanupFiles();
     if (L.done) return;   // error / 超时之后可能还会补一个 close，已经结过账了
     L.done = true;
     L.ok = code === 0 && /success/i.test(L.out);
@@ -100,12 +107,12 @@ async function loginStart(flag) {
       let auto = "";
       try { auto = fs.readFileSync(urlFile, "utf8").trim(); } catch {}
       const manual = (L.out.match(/https:\/\/\S+/) || [""])[0];
-      if ((auto && manual) || L.done || Date.now() - L.startedAt > 20000) {
+      if ((auto && manual) || L.done || LOGIN !== L || Date.now() - L.startedAt > 20000) {
         clearInterval(tick);
         if (auto || manual) return resolve({ ok: true, url: auto || manual, manualUrl: manual, auto: !!auto });
         // 20 秒还没拿到地址，但 claude 还在跑：别判失败（晚到的地址还能从 /api/login/status 取），
         // 交给界面继续轮询；真退出了才算失败（0.6.9 审计 195-G.4）
-        if (!L.done) return resolve({ ok: true, pending: true, url: null, message: tz("登录还在进行，拿到授权地址后会打开") });
+        if (!L.done && LOGIN === L) return resolve({ ok: true, pending: true, url: null, message: tz("登录还在进行，拿到授权地址后会打开") });
         resolve({ ok: false, message: tz("没拿到登录地址"), output: L.out.slice(-1500) });
       }
     }, 200);
@@ -117,13 +124,20 @@ async function runAuth(args, timeoutMs = 20000) {
   const blocked = await claudeBlocked();
   if (blocked) return { code: -1, out: blocked };
   return new Promise((resolve) => {
-    const child = spawn(PATHS.claudeLoader, claudeArgv(["auth", ...args]), { cwd: CFG.home, env: authEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    let out = "", stdout = "";
+    const child = spawn(PATHS.claudeLoader, claudeArgv(["auth", ...args]), { cwd: CFG.home, env: authEnv(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", stdout = "", settled = false;
+    const CAP = 256 * 1024;
+    const finish = (res) => { if (settled) return; settled = true; clearTimeout(t); resolve(res); };
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");   // 按流解码：多字节字符跨块不会被拆坏
-    child.stdout.on("data", (d) => { out += d; stdout += d; }); child.stderr.on("data", (d) => (out += d));
-    const t = setTimeout(() => { try { killTree(child); } catch {} }, timeoutMs);
-    child.on("close", (code) => { clearTimeout(t); resolve({ code, out, stdout }); });
-    child.on("error", (e) => { clearTimeout(t); resolve({ code: -1, out: e.message, stdout: "" }); });
+    child.stdout.on("data", (d) => { if (out.length < CAP) out += d; if (stdout.length < CAP) stdout += d; });
+    child.stderr.on("data", (d) => { if (out.length < CAP) out += d; });
+    const t = setTimeout(() => {
+      try { killTree(child); } catch {}
+      try { child.stdout?.destroy(); child.stderr?.destroy(); } catch {}
+      finish({ code: -1, out: out || "timeout", stdout });
+    }, timeoutMs);
+    child.on("close", (code) => finish({ code, out, stdout }));
+    child.on("error", (e) => finish({ code: -1, out: e.message, stdout: "" }));
   });
 }
 export let AUTH_CACHE = null;

@@ -11,8 +11,10 @@ const BURST = 20, WINDOW = 60e3;
 let hits = [];
 
 export function installCrashGuard() {
+  const onStdErr = (e) => { if (e && PIPE_GONE.has(e.code)) process.exit(0); };
+  process.stdout?.on("error", onStdErr);
+  process.stderr?.on("error", onStdErr);
   process.on("uncaughtException", (e) => {
-    if (e && PIPE_GONE.has(e.code)) process.exit(0);
     const now = Date.now();
     hits = hits.filter((t) => now - t < WINDOW); hits.push(now);
     try { log(`⚠️ 未捕获的异常（已接住，网关继续运行）: ${(e && e.stack) || e}`); } catch {}

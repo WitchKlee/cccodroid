@@ -90,20 +90,36 @@ function glibcVersion() {
   try { const m = /release version (\d+\.\d+)/.exec(fs.readFileSync(path.join(PATHS.glibcLib, "libc.so.6")).toString("latin1")); if (m) GLIBC_VER = m[1]; } catch {}
   return GLIBC_VER;
 }
+function customEnv(extra) {
+  const e = { ...termEnv(), ...(extra || {}) };
+  for (const k of ["CCAPP_KEY_FILE", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]) delete e[k];
+  return e;
+}
 function runP(cmd, args, opts = {}) {
-  const { timeout = 600000, maxBuffer = 16 << 20, ...rest } = opts;
+  const { timeout = 600000, maxBuffer = 16 << 20, env, ...rest } = opts;
   return new Promise((resolve) => {
-    const ch = spawn(cmd, args, { env: termEnv(), stdio: ["ignore", "pipe", "pipe"], detached: true, ...rest });
+    const ch = spawn(cmd, args, { env: env || customEnv(), stdio: ["ignore", "pipe", "pipe"], detached: true, ...rest });
     const out = [], err = [];
-    let outN = 0, errN = 0, done = false, killed = "";
+    let outN = 0, errN = 0, done = false, killed = "", killFall = null;
     const finish = (code, msg) => {
       if (done) return;
       done = true;
       clearTimeout(tm);
+      if (killFall) clearTimeout(killFall);
       resolve({ code, out: Buffer.concat(out).toString("utf8"), err: Buffer.concat(err).toString("utf8") || msg || "" });
     };
-    const tm = timeout > 0 ? setTimeout(() => { killed = "timeout"; killTree(ch); }, timeout) : null;
-    ch.stdout.on("data", (d) => { outN += d.length; if (outN > maxBuffer) { killed = "maxBuffer"; killTree(ch); return; } out.push(d); });
+    const abort = (why) => {
+      if (killed) return;
+      killed = why;
+      killTree(ch);
+      killFall = setTimeout(() => {
+        try { ch.stdout?.destroy(); ch.stderr?.destroy(); } catch {}
+        finish(1, why);
+      }, 2000);
+      killFall.unref?.();
+    };
+    const tm = timeout > 0 ? setTimeout(() => abort("timeout"), timeout) : null;
+    ch.stdout.on("data", (d) => { outN += d.length; if (outN > maxBuffer) { abort("maxBuffer"); return; } out.push(d); });
     ch.stderr.on("data", (d) => { errN += d.length; if (errN <= maxBuffer) err.push(d); });
     ch.on("error", (e) => finish(e.code || 1, e.message));
     ch.on("close", (code) => finish(killed ? 1 : (code ?? 1), killed));
@@ -142,19 +158,30 @@ const UNPACK_MAX_FILES = 200000, UNPACK_RESERVE = 512 * 1024 * 1024;
 function runCapped(cmd, args, dir, max) {
   return new Promise((resolve) => {
     let f0; try { f0 = fs.statfsSync(dir); } catch {}
-    let over = 0, done = false, killed = "";
+    let over = 0, done = false, killed = "", killFall = null;
     const out = [], err = [];
     let outN = 0, errN = 0;
-    const ch = spawn(cmd, args, { env: termEnv(), stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const ch = spawn(cmd, args, { env: customEnv(), stdio: ["ignore", "pipe", "pipe"], detached: true });
     const finish = (code, msg) => {
       if (done) return;
       done = true;
       clearInterval(t);
       clearTimeout(tm);
+      if (killFall) clearTimeout(killFall);
       resolve(over ? { code: "TOOBIG", used: over, out: "", err: "" }
         : { code, out: Buffer.concat(out).toString("utf8"), err: Buffer.concat(err).toString("utf8") || msg || "" });
     };
-    const tm = setTimeout(() => { killed = "timeout"; killTree(ch); }, 600000);
+    const abort = (why) => {
+      if (killed) return;
+      killed = why;
+      killTree(ch);
+      killFall = setTimeout(() => {
+        try { ch.stdout?.destroy(); ch.stderr?.destroy(); } catch {}
+        finish(1, why);
+      }, 2000);
+      killFall.unref?.();
+    };
+    const tm = setTimeout(() => abort("timeout"), 600000);
     ch.stdout.on("data", (d) => { outN += d.length; if (outN <= (16 << 20)) out.push(d); });
     ch.stderr.on("data", (d) => { errN += d.length; if (errN <= (16 << 20)) err.push(d); });
     ch.on("error", (e) => finish(e.code || 1, e.message));
@@ -163,7 +190,7 @@ function runCapped(cmd, args, dir, max) {
       if (over || !f0) return;
       let f; try { f = fs.statfsSync(dir); } catch { return; }
       const used = (f0.bavail - f.bavail) * f.bsize, files = f0.ffree - f.ffree;
-      if (used > max || files > UNPACK_MAX_FILES || f.bavail * f.bsize < UNPACK_RESERVE) { over = Math.max(used, 1); killTree(ch); }
+      if (used > max || files > UNPACK_MAX_FILES || f.bavail * f.bsize < UNPACK_RESERVE) { over = Math.max(used, 1); abort("TOOBIG"); }
     }, 200);
   });
 }
@@ -330,7 +357,9 @@ async function customAnalyze(src, displayName) {
   } else if (/\.(deb|rpm|apk|appimage)$/i.test(base)) {
     return fail(tz("{ext} 包还不支持：请用程序本身、或 .tar.gz / .zip 压缩包", { ext: base.split(".").pop() }));
   } else {
-    const head = Buffer.alloc(4); const fd = fs.openSync(sp, "r"); fs.readSync(fd, head, 0, 4, 0); fs.closeSync(fd);
+    const head = Buffer.alloc(4);
+    const fd = fs.openSync(sp, "r");
+    try { fs.readSync(fd, head, 0, 4, 0); } finally { fs.closeSync(fd); }
     if (head.readUInt32BE(0) !== 0x7f454c46 && head.toString("latin1", 0, 2) !== "#!") return fail(tz("认不出这个文件：不是程序（ELF）、脚本，也不是支持的压缩包"));
     const name = base.replace(/[^\w.+-]/g, "_");
     fs.copyFileSync(sp, path.join(x, name)); fs.chmodSync(path.join(x, name), 0o755);
@@ -360,7 +389,10 @@ async function customAnalyze(src, displayName) {
     const e = elfInfo(abs);
     if (e) { elves.push({ rel: f.rel, ...e, kind: elfKind(e, path.basename(f.rel)), exec: (s.mode & 0o111) !== 0 }); continue; }
     if (s.mode & 0o111) {
-      const b = Buffer.alloc(128); const fd = fs.openSync(abs, "r"); const n = fs.readSync(fd, b, 0, 128, 0); fs.closeSync(fd);
+      const b = Buffer.alloc(128);
+      let n = 0;
+      const fd = fs.openSync(abs, "r");
+      try { n = fs.readSync(fd, b, 0, 128, 0); } finally { fs.closeSync(fd); }
       const line = b.toString("utf8", 0, n).split("\n")[0];
       if (line.startsWith("#!")) scripts.push({ rel: f.rel, interp: line.slice(2).trim() });
     }
@@ -618,7 +650,9 @@ async function customInstall(b) {
     fs.mkdirSync(CUSTOM_BIN, { recursive: true });
     for (const e of entries) {
       try { fs.chmodSync(path.join(appDir, e.rel), 0o755); } catch {}
-      fs.writeFileSync(path.join(CUSTOM_BIN, e.cmd), customWrapper(id, e, appDir, libs, e), { mode: 0o755 });
+      if (!writeAtomic(path.join(CUSTOM_BIN, e.cmd), customWrapper(id, e, appDir, libs, e), { mode: 0o755 })) {
+        throw new Error(tz("命令入口没写进去（存储满了或没有权限），这次安装没有完成"));
+      }
     }
     const rec = {
       id, name: String(b.name || id).slice(0, 80), desc: String(b.desc || "").slice(0, 400), source: s.report.source,
@@ -650,7 +684,7 @@ export function customRefresh() {
   for (const r of customRecords()) {
     try {
       fs.mkdirSync(CUSTOM_BIN, { recursive: true });
-      for (const e of r.entries) fs.writeFileSync(path.join(CUSTOM_BIN, e.cmd), customWrapper(r.id, e, path.join(r.dir, "app"), r.libs, { gpu: e.gpu && gpu, patchelf: e.patchelf }), { mode: 0o755 });
+      for (const e of r.entries) writeAtomic(path.join(CUSTOM_BIN, e.cmd), customWrapper(r.id, e, path.join(r.dir, "app"), r.libs, { gpu: e.gpu && gpu, patchelf: e.patchelf }), { mode: 0o755 });
     } catch (e) { log(`[custom] ${r.id} 入口重写失败：${e.message}`); }
     // 早先「经加载器」时装的会把 APK 里 ld.so 的路径写进程序：改回工具包里那份（APK 一更新那个路径就没了）
     for (const e of r.entries.filter((x) => x.patchelf)) {

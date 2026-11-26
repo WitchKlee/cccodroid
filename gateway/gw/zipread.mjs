@@ -43,10 +43,13 @@ export function zipList(file, enc = "auto") {
     if (tail.readUInt16LE(e + 4) !== 0 || tail.readUInt16LE(e + 6) !== 0) throw new Error("multi-volume zip");
     let total = tail.readUInt16LE(e + 10), cdSize = tail.readUInt32LE(e + 12), cdOff = tail.readUInt32LE(e + 16), z64 = false;
     if (total === 0xffff || cdSize === 0xffffffff || cdOff === 0xffffffff) {
+      if (eocdPos < 20) throw new Error("zip64 locator missing");
       const loc = readAt(fd, eocdPos - 20, 20);
       if (loc.length < 20 || loc.readUInt32LE(0) !== SIG_Z64_LOC) throw new Error("zip64 locator missing");
-      const z = readAt(fd, Number(loc.readBigUInt64LE(8)), 56);
-      if (z.readUInt32LE(0) !== SIG_Z64_EOCD) throw new Error("zip64 end record missing");
+      const zOff = Number(loc.readBigUInt64LE(8));
+      if (!Number.isSafeInteger(zOff) || zOff < 0 || zOff + 56 > size) throw new Error("zip64 end record missing");
+      const z = readAt(fd, zOff, 56);
+      if (z.length < 56 || z.readUInt32LE(0) !== SIG_Z64_EOCD) throw new Error("zip64 end record missing");
       z64 = true;
       total = Number(z.readBigUInt64LE(32)); cdSize = Number(z.readBigUInt64LE(40)); cdOff = Number(z.readBigUInt64LE(48));
     }
@@ -63,6 +66,7 @@ export function zipList(file, enc = "auto") {
       let csize = cd.readUInt32LE(p + 20), usize = cd.readUInt32LE(p + 24);
       const nl = cd.readUInt16LE(p + 28), xl = cd.readUInt16LE(p + 30), cl = cd.readUInt16LE(p + 32), ext = cd.readUInt32LE(p + 38);
       let lho = cd.readUInt32LE(p + 42);
+      if (p + 46 + nl + xl + cl > cd.length) throw new Error("bad central directory");
       const nameB = cd.subarray(p + 46, p + 46 + nl), extra = cd.subarray(p + 46 + nl, p + 46 + nl + xl);
       let uname = null, mtime = null;
       for (let q = 0; q + 4 <= extra.length;) {

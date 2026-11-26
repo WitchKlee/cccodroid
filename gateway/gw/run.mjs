@@ -341,6 +341,7 @@ export async function startRun(item) {
     const known = modelsCached(P) || Number(currentModelInfo(model, P).context_window) > 0;
     if (P.id !== PROVIDER.id || !known) await fetchModels(false, P).catch(() => {});
     else fetchModels(false, P).catch(() => {});
+    if (run.aborted || run.ended) return endRun(run, { durationMs: 0 });
     // 清单可能刚拉到 / 刚刷新：档位按最新的表再校准一次（和以前一样，以取完清单为准）
     if (effort) {
       const mi = currentModelInfo(model, P);
@@ -365,7 +366,7 @@ export async function startRun(item) {
       emit({ type: "error", message: e.message });
       return endRun(run, { failed: true });
     }
-    if (run.aborted) return endRun(run, { failed: true });
+    if (run.aborted || run.ended) return endRun(run, { failed: true });
   }
 
   const argv = [
@@ -393,6 +394,7 @@ export async function startRun(item) {
   // 这里只看总开关决定挂不挂；具体哪些工具出现由 device-mcp.mjs 现问应用。端侧小模型不挂（读不起）
   const devMcp = deviceMcpConfig();
   if (devMcp && !P.local && (await privCall({ op: "dev_status" }, 3000)).on) argv.push("--mcp-config", devMcp);
+  if (run.aborted || run.ended) return endRun(run, { durationMs: 0 });
 
   // 告诉 claude 这台设备上有什么现成工具 —— 不说它就不会去用。
   // 和用户自己的追加提示合成一条：重复给同一个单值参数，解析器一般只留一个，合成一条最稳
@@ -405,6 +407,7 @@ export async function startRun(item) {
     : `You are ${model}, a small open model running locally on the user's Android device through llama.cpp (not Claude). Reply in the user's language; keep answers short.`;
   // 建档（脉络）：常驻规则 + 这一轮该不该先建档（见 archive.mjs）
   const arch = P.local ? null : await archiveHint(run.sessionId).catch(() => null);
+  if (run.aborted || run.ended) return endRun(run, { durationMs: 0 });
   const appendPrompt = [P.local ? localHint : toolsHint(), !P.nativeModels && !P.local ? TASKS_HINT : "", P.local ? "" : previewHint(cwd), P.local ? "" : integrityHint(), P.local ? "" : ruleblockHint(), arch?.rule].filter(Boolean).join("\n\n");
   // 子代理（连孙代理）统一的联络规矩：用 agentId 发消息、summary 写事由、长内容落文件只发路径（见 agents.mjs）
   const subPrompt = !P.local && !message.trim().startsWith("/") ? SUBAGENT_HINT + "\n\n" + integrityHint() + "\n\n" + ruleblockHint() : "";
@@ -437,6 +440,7 @@ export async function startRun(item) {
   // 接口勾了「图片随消息发」：消息里提到的图片再各带一份 image 块（太大的先缩，要等，所以放在起进程前）
   let imgs0 = [];
   if (!isCmd && wantsInline(P)) { const env = claudeEnv({ model, provider: P }); imgs0 = await inlineImages(message, P, { tmpDir: env.TMPDIR, env }); }
+  if (run.aborted || run.ended) return endRun(run, { durationMs: 0 });
   // 会话封签（见 integrity.mjs）：上一轮之后记录在应用外被改过、或是导入的，这一轮告诉模型别把那段历史当成自己说过的。
   // 起进程前核对：claude --resume 一起来就可能往文件里写
   const sfile = () => run.sessionId ? findSessionFile(String(run.sessionId), run.cwd)?.file : null;   // 按这一轮的目录找（F8）
@@ -446,11 +450,12 @@ export async function startRun(item) {
     return endRun(run, { failed: true, finalText: msg });
   }
   let integ = await checkSessionAsync(run.sessionId, sfile());
+  if (run.aborted || run.ended) return endRun(run, { durationMs: 0 });
   let integNote = isCmd || P.local ? "" : integrityNote(integ);
   // 消息里提到档号（0ab2·61）：附上那一章的压缩摘要（见 merge.mjs refNote）。读不出来就算了，不挡这一轮
   const refN = isCmd || P.local ? "" : await refNote(message, run.sessionId).catch((e) => { log("档号引用失败: " + e.message); return ""; });
   // 上面拉模型清单、问设备工具、读建档提示都要等：这期间点了停止（还没有进程可杀）就别再起了（安全通告 GHSA-g35m）
-  if (run.aborted) { log("⏹ 起进程前已停止"); return endRun(run, { durationMs: 0 }); }
+  if (run.aborted || run.ended) { log("⏹ 起进程前已停止"); return endRun(run, { durationMs: 0 }); }
   // 用户级配置（~/.claude）有没确认的改动、之前的对话留下了后台进程（见 userconf.mjs / leftover.mjs）：先问。
   // 没人看着的（定时任务、空闲压缩）不跑：定时任务按失败记、照任务设置通知。发行版只问回填进来的 MCP 与权限（UC_SEALED）
   const ucp = ucPending(sealed() ? UC_SEALED : null), procs = leftoverProcs(new Map([...RUNS].filter(([k]) => k !== run.id).map(([k, r]) => [String(k), r.childStart ?? null])));
@@ -759,6 +764,7 @@ export async function startRun(item) {
       resp = { behavior: "deny", message: String(a.message || "").trim().slice(0, 2000) || "用户拒绝了这次操作。", ...(a.interrupt ? { interrupt: true } : {}) };
     }
     if (!writeCtl({ type: "control_response", response: { subtype: "success", request_id: id, response: resp } })) return false;
+    if (p._tm) { clearTimeout(p._tm); p._tm = null; }
     run.perms.delete(id);
     armIdleClose();
     // 「拒绝并停止」也是停止：这一轮后面排着的别自动发（审查 #49 P2-3）
@@ -827,6 +833,7 @@ export async function startRun(item) {
         run.answerPerm(id, { behavior: "deny", interrupt: true, expired: true, message: `The user did not respond to this permission request for ${PERM_WAIT_MS / 60000} minutes, so it was denied.` });
       }), PERM_WAIT_MS);
       tm.unref?.();
+      Object.defineProperty(p, "_tm", { value: tm, writable: true, enumerable: false, configurable: true });
       log(`⏸ 等确认 ${p.tool} ${argLen(p.input)}`);
       emit({ type: "perm_request", ...permView(p) });
       publishState();
@@ -1054,6 +1061,8 @@ export async function startRun(item) {
       run.paths.feed(ev);
     }
     if (ev.type === "control_cancel_request") {           // claude 自己撤回了（比如被中断）
+      const cp = run.perms.get(ev.request_id);
+      if (cp?._tm) { clearTimeout(cp._tm); cp._tm = null; }
       if (run.perms.delete(ev.request_id)) { emit({ type: "perm_resolved", id: ev.request_id, behavior: "cancel" }); publishState(); }
       armIdleClose();
       return;
@@ -1168,6 +1177,7 @@ export async function startRun(item) {
     noteSessionFile(ev.type);
   };
 
+  const STDOUT_LINE_MAX = 8 * 1024 * 1024;
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");   // 按流解码：多字节字符跨块不会被拆坏
   child.stdout.on("data", (d) => {
     buf += d.toString("utf8");
@@ -1177,6 +1187,10 @@ export async function startRun(item) {
       buf = buf.slice(nl + 1);
       // 单条事件处理出错只丢这一条：以前这里没有 try，一个形状不对的事件就带走整个网关（0.6.9 审计 P1-6）
       if (line) { try { feed(line); } catch (e) { log(`${runTag(run)} ⚠️ 处理 claude 事件出错（已跳过这条）: ${(e && e.stack) || e}`); } }
+    }
+    if (buf.length > STDOUT_LINE_MAX) {
+      log(`${runTag(run)} ⚠️ stdout 单行超过 8MB 未换行，丢弃缓冲`);
+      buf = "";
     }
   });
 
@@ -1204,7 +1218,9 @@ export async function startRun(item) {
   run.requeuePending = requeuePending;
 
   const finish = async (code, signal) => {
-    if (buf.trim()) feed(buf.trim());
+    if (buf.trim()) {
+      try { feed(buf.trim()); } catch (e) { log(`${runTag(run)} ⚠️ 处理收尾残余事件出错（已跳过）: ${(e && e.stack) || e}`); }
+    }
     buf = "";
     noteSessionFile("finish");           // 记录只在退出前才落盘的情况：收尾前再核一次
     run.meter.close();                   // 中断 / 被杀也走这里：子代理记录最后扫一遍
@@ -1213,6 +1229,7 @@ export async function startRun(item) {
     if (!lastResult || lastResult.is_error) run.giveNotesBack?.();
     try { await sealSessionAsync(run.sessionId, sfile(), { clear: !!integNote && !run.aborted && !!lastResult && !lastResult.is_error, base: run.sealBase?.sid === run.sessionId && run.sealBase.hash ? run.sealBase : null }); } catch (e) { log(`${runTag(run)} [封签] ${e.message}`); }
     run.inputOpen = false;
+    for (const p of run.perms.values()) if (p?._tm) { clearTimeout(p._tm); p._tm = null; }
     run.perms.clear();                // 卡片随 run_end 一起作废（前端按 run_end 收起）
     requeuePending();
     const ms = Date.now() - t0;
@@ -1286,7 +1303,7 @@ export async function startRun(item) {
   // 以前直接 endRun 把这些全跳过了（FIND-002）。进程树由调用方负责杀，这里只把管道拆掉
   run.forceFinish = () => {
     log(`${runTag(run)} ⏹ 强制收尾：按正常收尾处理`);
-    for (const s of [child.stdin, child.stdout, child.stderr]) try { s?.destroy(); } catch {}
+    for (const s of [child.stdin, child.stdout, child.stderr, child.stdio?.[3]]) try { s?.destroy(); } catch {}
     finishSafe(null, "SIGKILL");
   };
   child.on("close", finishSafe);

@@ -64,8 +64,15 @@ function ownedPaths() {
 /** 脚本的解释器（相对 $PREFIX 的 bin/xxx 或绝对路径）；不是脚本返回 null */
 function interp(p) {
   let head;
-  try { const fd = fs.openSync(p, "r"); const b = Buffer.alloc(256); const n = fs.readSync(fd, b, 0, 256, 0); fs.closeSync(fd); head = b.subarray(0, n); }
+  let fd;
+  try {
+    fd = fs.openSync(p, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    const b = Buffer.alloc(256);
+    const n = fs.readSync(fd, b, 0, 256, 0);
+    head = b.subarray(0, n);
+  }
   catch { return null; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
   if (head[0] === 0x7f && head.toString("latin1", 1, 4) === "ELF") return { elf: true };
   const s = head.toString("utf8");
   if (!s.startsWith("#!")) return null;
@@ -124,7 +131,7 @@ export function cleanOrphans() {
   for (const [rel, st] of cand) {
     const p = path.join(PREFIX, rel);
     if (st.isSymbolicLink()) {
-      const t = fs.readlinkSync(p);
+      let t; try { t = fs.readlinkSync(p); } catch { continue; }
       let ok = false; try { fs.statSync(p); ok = true; } catch {}
       if (ok && /(^|\/)lib\/node_modules\//.test(t)) keep.add(rel);
       else if (!ok) out.add(rel);
@@ -139,7 +146,8 @@ export function cleanOrphans() {
   for (const [rel, st] of cand) {
     if (!st.isSymbolicLink() || out.has(rel) || keep.has(rel)) continue;
     // 目标换成相对 $PREFIX 的路径：绝对路径写的是 /data/data/<包名>/files/usr/…，和 PREFIX（/data/user/0/…）对不上
-    const t = fs.readlinkSync(path.join(PREFIX, rel)), i = t.indexOf("/files/usr/");
+    let t; try { t = fs.readlinkSync(path.join(PREFIX, rel)); } catch { continue; }
+    const i = t.indexOf("/files/usr/");
     const real = t.startsWith("/") ? (i >= 0 ? t.slice(i + 11) : null) : path.normalize(path.join("bin", t));
     if (!real) continue;
     if (out.has(real) || cand.has(real) && !keep.has(real)) out.add(rel);

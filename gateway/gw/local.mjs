@@ -11,7 +11,7 @@ import { NEXT, readBody, sendJson } from "./http.mjs";
 import { termEnv } from "./terminal.mjs";
 import { compIndex, compIndexCache, compRun, sha256File } from "./components.mjs";
 import { readSmallFile } from "./saferead.mjs";
-import { guarded } from "./crashguard.mjs";
+import { guarded, onShutdown } from "./crashguard.mjs";
 import { END_HOOKS, runEmit } from "./queue.mjs";
 import { privCall } from "./usage.mjs";
 import { ucAppBegin, ucAppWrote } from "./userconf.mjs";
@@ -45,7 +45,11 @@ function liveRuns() {
 }
 function awaitWithRunAbort(promise, run) {
   if (!run) return promise;
-  if (run.aborted) { LL_RUNS.delete(run); return Promise.reject(new Error("aborted")); }
+  if (run.aborted || run.ended) {
+    promise.catch(() => {});
+    LL_RUNS.delete(run);
+    return Promise.reject(new Error("aborted"));
+  }
   return new Promise((resolve, reject) => {
     const iv = setInterval(() => {
       if (run.aborted || run.ended) {
@@ -180,7 +184,9 @@ export async function ensureLlama(want, note, run = null) {
     if (run) localRunAttach(run);
     return m;
   }
+  if (run && (run.aborted || run.ended)) throw new Error("aborted");
   await verifySharedModel(m, note);
+  if (run && (run.aborted || run.ended)) throw new Error("aborted");
   // 同模型/参数已在加载中：共享这次加载，并把等待方计入占位，避免加载刚结束就被别的会话抢换
   if (llStarting && llStartingSig === sig) {
     llWaiters++;
@@ -251,11 +257,18 @@ function llamaStart(m, note) {
   return new Promise((resolve, reject) => {
     const { gpu, ctx, args, sig } = llamaPlan(m);
     fs.mkdirSync(path.dirname(LLAMA_LOG), { recursive: true });
-    const logFd = fs.openSync(LLAMA_LOG, "w");
+    let logFd = fs.openSync(LLAMA_LOG, "w"), logBytes = 0;
+    const LLAMA_LOG_MAX = 8 * 1024 * 1024;
+    const closeLog = () => { if (logFd !== null) { try { fs.closeSync(logFd); } catch {} logFd = null; } };
     const argv = [ensureShell(), "-c", 'exec "$0" "$@"', llamaBin(), ...args];
+    const llamaEnv = { ...termEnv() };
+    for (const k of ["CCAPP_KEY_FILE", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) delete llamaEnv[k];
     log(`[local] 启动 llama-server：${m.id}（${gpu ? "GPU" : "CPU"}，上下文 ${ctx}）`);
     note && note("load", tz("正在加载端侧模型 {name}（{how}）…", { name: m.id, how: gpu ? "GPU" : "CPU" }));
-    const c = spawn(argv[0], argv.slice(1), { env: termEnv(), cwd: CFG.home, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let c;
+    try {
+      c = spawn(argv[0], argv.slice(1), { env: llamaEnv, cwd: CFG.home, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) { closeLog(); reject(e); return; }
     try { fs.mkdirSync(path.dirname(LLAMA_PID), { recursive: true }); fs.writeFileSync(LLAMA_PID, JSON.stringify({ pid: c.pid, gw: process.pid, at: Date.now() }), { mode: 0o600 }); } catch {}
     Object.assign(LL, { child: c, file: m.file, id: m.id, sig, gpu, state: "loading", since: Date.now(), err: "", loadMs: 0 });
     let tail = "", lastNote = 0, listened = false;
@@ -263,7 +276,9 @@ function llamaStart(m, note) {
     // 还要看到自己这个子进程打出「listening … 端口」那行（占不上端口它会报错退出，不会打这行）
     const LISTEN = new RegExp(`listening[^\\n]*\\b${LLAMA_PORT}\\b`, "i");
     const eat = (d) => {
-      try { fs.writeSync(logFd, d); } catch {}
+      if (logFd !== null && logBytes < LLAMA_LOG_MAX) {
+        try { const b = Buffer.isBuffer(d) ? d : Buffer.from(String(d)); fs.writeSync(logFd, b); logBytes += b.length; } catch {}
+      }
       tail = (tail + d).slice(-6000);
       if (!listened && LISTEN.test(tail)) listened = true;
       // 读提示的进度（llama-server 每读一批打一行 progress = 0.41）报给当前这一轮：首字前别让人干等
@@ -278,9 +293,9 @@ function llamaStart(m, note) {
     c.stdout.on("data", guarded("llama stdout", eat)); c.stderr.on("data", guarded("llama stderr", eat));
     let done = false;
     const fail = (msg) => { if (done) return; done = true; LL.state = "error"; LL.err = msg; reject(new Error(msg)); };
-    c.on("error", (e) => { try { fail(e.message); } catch {} });
+    c.on("error", (e) => { closeLog(); try { fail(e.message); } catch {} });
     c.on("close", guarded("llama close", (code) => {
-      try { fs.closeSync(logFd); } catch {}
+      closeLog();
       // 这个进程退出了：运行标记只删自己那份（换模型时新进程可能已经写了新的）
       try { const j = JSON.parse(fs.readFileSync(LLAMA_PID, "utf8")); if (j && j.pid === c.pid) fs.rmSync(LLAMA_PID, { force: true }); } catch {}
       const ours = LL.child === c, wasReady = LL.state === "ready";     // ours：不是网关自己停的（llamaStop 会先把 child 清掉）
@@ -338,12 +353,16 @@ function llamaReap() {
   }
   try { fs.rmSync(LLAMA_PID, { force: true }); } catch {}
 }
-// 空闲自动停：没有在跑的会话、十分钟没用过，就把模型卸掉还内存
+// 空闲自动停：没有在跑的端侧会话、十分钟没用过，就把模型卸掉还内存；网关优雅退出时同步停掉 llama-server 与模型下载
+onShutdown("local", () => {
+  llamaStop("网关退出");
+  for (const [, j] of MDL) { j.cancelled = true; if (j.child) try { killTree(j.child); } catch {} }
+});
 if (PREFIX) {
   if (LIVE) llamaReap();
   setInterval(guarded("llama idle", () => {
     if (!LL.child) return;
-    if (RUNS.size) { LL.lastUse = Date.now(); return; }
+    if (liveRuns().length || llStarting || llWaiters > 0) { LL.lastUse = Date.now(); return; }
     if (Date.now() - LL.lastUse > LLAMA_IDLE_MS) llamaStop("空闲");
   }), 60e3).unref?.();
 }
@@ -504,8 +523,14 @@ function modelFetch(e, urls) {
       expireModelCache();
       log(`[local] 模型已下载 ${e.id}`);
     } catch (er) {
-      if (job.lowSpace) { try { fs.rmSync(part, { force: true }); } catch {} er = new Error(tz("存储空间不够了")); job.cancelled = false; }
-      else if (job.cancelled) { MDL.delete(e.id); try { fs.rmSync(part, { force: true }); fs.rmSync(meta, { force: true }); } catch {} return; }
+      if (job.lowSpace) { try { if (MDL.get(e.id) === job) fs.rmSync(part, { force: true }); } catch {} er = new Error(tz("存储空间不够了")); job.cancelled = false; }
+      else if (job.cancelled) {
+        if (MDL.get(e.id) === job) {
+          MDL.delete(e.id);
+          try { fs.rmSync(part, { force: true }); fs.rmSync(meta, { force: true }); } catch {}
+        }
+        return;
+      }
       Object.assign(job, { phase: "error", err: er.message });
       log(`[local] 模型下载失败 ${e.id}：${er.message}`);
     } finally { clearInterval(tick); }

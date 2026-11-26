@@ -380,17 +380,28 @@ function noteSide(run, ev) {
 
 /** 这一轮的完整事件记录 —— 断线太久环形缓冲续不上时，靠它把整轮重放给前端。
  *  相邻增量就地合并，一轮再长也只有"块数"那么多条。 */
+const RUN_LOG_MAX = 4000;
+const RUN_DELTA_MAX = 512 * 1024;
 function record(run, ev) {
   // 有副作用的工具：发起时记一笔、结果回来销账（FIND-039/049）。进程被杀时这一笔留在运行标记里，
   // 下次启动的「继续」卡据此说清楚哪些操作的结果不知道 —— 点「继续」要不要重做，用户得先能判断
   const side = noteSide(run, ev);
   const last = run.log[run.log.length - 1];
-  if (last && last.type === ev.type && (ev.type === "delta" || ev.type === "thinking_delta")) last.text += ev.text;
+  if (last && last.type === ev.type && (ev.type === "delta" || ev.type === "thinking_delta") && last.text.length + String(ev.text || "").length <= RUN_DELTA_MAX) last.text += ev.text;
   else if (last && last.type === "usage" && ev.type === "usage") run.log[run.log.length - 1] = { ...ev };
   else if (last && last.type === "phase" && ev.type === "phase") run.log[run.log.length - 1] = { ...ev };
   // 本轮输出 token 每秒一条，夹在增量中间合并不到：只留一条、原地改成最新的数（重放只要最后的值）
   else if (ev.type === "run_tokens" && run.tokAt != null && run.log[run.tokAt]?.type === "run_tokens") run.log[run.tokAt] = { ...ev };
-  else { if (ev.type === "run_tokens") run.tokAt = run.log.length; run.log.push(logCopy(ev)); }
+  else {
+    if (ev.type === "run_tokens") run.tokAt = run.log.length;
+    run.log.push(logCopy(ev));
+    if (run.log.length > RUN_LOG_MAX) {
+      const keep0 = run.log[0]?.type === "run_start" ? 1 : 0;
+      const drop = run.log.length - RUN_LOG_MAX;
+      run.log.splice(keep0, drop);
+      if (run.tokAt != null) run.tokAt = run.tokAt >= keep0 + drop ? run.tokAt - drop : null;
+    }
+  }
   // 台账变了马上落盘：被强杀时磁盘上那份就是最后一次工具结果之后的真实状态
   if (side) saveRunMark();
 }
@@ -406,6 +417,7 @@ export const END_HOOKS = [];
 export function endRun(run, fields = {}) {
   if (run.ended) return;
   if (run.limitTimer) clearTimeout(run.limitTimer);
+  if (run.perms) for (const p of run.perms.values()) if (p?._tm) { clearTimeout(p._tm); p._tm = null; }
   for (const h of END_HOOKS) { try { h(run, fields); } catch (e) { log("结束钩子出错: " + e.message); } }
   flushPend(run);
   run.ended = true;

@@ -15,6 +15,7 @@ import { sealArgv, sealEnv, sealed } from "./edition.mjs";
 import { claudeSeal } from "./claudeseal.mjs";
 import { gwRuntimeBlocked } from "./gwpin.mjs";
 import { sessionRetention } from "./retention.mjs";
+import { writeAtomic } from "./statefile.mjs";
 
 // 敏感操作再确认：PreToolUse 钩子（guard/cc-guard.mjs），碰密钥 / 读屏点按 / 往外分享时让 claude 停下来问，全部放行也一样。
 // 不设全局关闭开关：整层关掉就等于没有；旧设置里存过 guard:false 也不再认。要放行就在确认卡片上逐次「允许」。
@@ -161,14 +162,18 @@ async function doStartBridge() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   bridgeProc = proc;
+  let spawnErr = false;
+  proc.on("error", (e) => { spawnErr = true; log(`[bridge] 启动失败: ${e.message}`); });
   proc.stdout.on("data", (d) => log(`[bridge] ${String(d).trim()}`));
   proc.stderr.on("data", (d) => log(`[bridge!] ${String(d).trim()}`));
   for (let i = 0; i < 40; i++) {
     await sleep(250);
     if (await bridgeAlive()) { log("桥已就绪"); return true; }
-    if (proc.exitCode !== null) break;      // 起崩了（多为端口占用）就别再白等 10 秒
+    if (spawnErr || proc.exitCode !== null) break;      // 起崩了（多为端口占用）就别再白等 10 秒
   }
   log("桥启动超时/崩溃");
+  try { if (proc.exitCode === null) proc.kill("SIGTERM"); } catch {}
+  if (bridgeProc === proc) bridgeProc = null;
   return false;
 }
 
@@ -724,12 +729,8 @@ export function settingsArgs(p = PROVIDER) {
   const key = keyOf(p);
   const file = p.id === PROVIDER.id ? KEY_FILE : KEY_FILE + "-" + String(p.id).replace(/[^\w.-]/g, "_");
   if (key) {
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, key, { mode: 0o600 });
-      fs.chmodSync(file, 0o600);
-      st.apiKeyHelper = "cat '" + file + "'";
-    } catch (e) { log("写密钥文件失败: " + e.message); }
+    if (writeAtomic(file, key, { mode: 0o600 })) st.apiKeyHelper = "cat '" + file + "'";
+    else log("写密钥文件失败");
   } else {
     try { fs.unlinkSync(file); } catch {}
   }
@@ -744,12 +745,7 @@ const termKeyPath = (p) => KEY_FILE + "-term-" + String(p.id).replace(/[^\w.-]/g
 export function termKeyFile(p = PROVIDER) {
   const file = termKeyPath(p), key = keyOf(p);
   if (!key) { try { fs.unlinkSync(file); } catch {} return ""; }
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, key, { mode: 0o600 });
-    fs.chmodSync(file, 0o600);
-    return file;
-  } catch (e) { log("写终端密钥文件失败: " + e.message); return ""; }
+  return writeAtomic(file, key, { mode: 0o600 }) ? file : "";
 }
 
 /** 接口删掉后清掉它留在 .cache 里的密钥文件（FIND-052）：按 id 一份、终端一份；

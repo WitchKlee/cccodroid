@@ -41,7 +41,7 @@ test("无线 ADB 保活只接受明确的布尔值，并原样回传原生确认
   for (const body of [{}, { enable: "true" }, { enable: 1 }]) {
     assert.equal((await post(body)).status, 400);
   }
-  assert.equal((await fetch(url)).status, 400);
+  assert.equal((await fetch(url)).status, 405);
   assert.deepEqual(commands, []);
 
   assert.deepEqual(await (await post({ enable: true, port: 5037 })).json(), {
