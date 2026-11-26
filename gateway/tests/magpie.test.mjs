@@ -8,8 +8,8 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import zlib from "node:zlib";
 import { CFG } from "../gw/config.mjs";
-import { PROVIDER } from "../gw/providers.mjs";
-import { SETTINGS } from "../gw/settings-store.mjs";
+import { PROVIDER, applyProvider, upsertProvider } from "../gw/providers.mjs";
+import { SETTINGS, saveSettings } from "../gw/settings-store.mjs";
 import {
   _magpieForTest,
   bunInstalled,
@@ -159,6 +159,11 @@ process.on("SIGTERM", () => { gw.close(); web.close(); process.exit(0); });
   const prevNative = process.env.CCAPP_NATIVE_LIB;
   const prevKey = process.env.ANTHROPIC_API_KEY;
   const prevTok = process.env.CCAPP_TOKEN;
+  const prevProvider = SETTINGS.provider;
+  const prevModel = SETTINGS.model;
+  const prevTitleModel = SETTINGS.titleModel;
+  const provFile = path.join(CFG.home, "ccapp-providers.json");
+  const prevProvRaw = fs.existsSync(provFile) ? fs.readFileSync(provFile, "utf8") : null;
   try {
     process.env.CCAPP_MAGPIE = fakeBin;
     delete process.env.CCAPP_ENOSYS_RUN;
@@ -194,6 +199,14 @@ process.on("SIGTERM", () => { gw.close(); web.close(); process.exit(0); });
     assert.equal(stopped.body.webUrl, "");
   } finally {
     await stopMagpie();
+    SETTINGS.provider = prevProvider;
+    SETTINGS.model = prevModel;
+    SETTINGS.titleModel = prevTitleModel;
+    saveSettings();
+    upsertProvider("magpie", { clearKey: true });
+    if (prevProvRaw === null) { try { fs.rmSync(provFile, { force: true }); } catch {} }
+    else { try { fs.writeFileSync(provFile, prevProvRaw, { mode: 0o600 }); } catch {} }
+    applyProvider();
     if (prevBin === undefined) delete process.env.CCAPP_MAGPIE; else process.env.CCAPP_MAGPIE = prevBin;
     if (prevEnosys === undefined) delete process.env.CCAPP_ENOSYS_RUN; else process.env.CCAPP_ENOSYS_RUN = prevEnosys;
     if (prevNative === undefined) delete process.env.CCAPP_NATIVE_LIB; else process.env.CCAPP_NATIVE_LIB = prevNative;
