@@ -204,7 +204,14 @@ int main(int argc, char **argv) {
 
     char target[PATH_MAX];
     int found = 0;
-    if (clean_path && *clean_path) {
+    if (strcmp(base, "bun") == 0) {
+        const char *mb = getenv("CCAPP_MAGPIE_BUN_REAL");
+        if (mb && *mb && is_exec_candidate(mb, have_self, &self_st)) {
+            snprintf(target, sizeof target, "%s", mb);
+            found = 1;
+        }
+    }
+    if (!found && clean_path && *clean_path) {
         found = resolve_in_path(clean_path, base, have_self, &self_st, target, sizeof target);
     }
     if (!found && (strcmp(base, "bash") == 0 || strcmp(base, "sh") == 0)) {

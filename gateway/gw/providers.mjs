@@ -410,6 +410,15 @@ const PRESETS = {
       { id: "muse-spark-1.1", name: "Muse Spark 1.1", context_window: 1048576 },
     ],
   },
+  magpie: {
+    label: "Magpie 本地路由", labelEn: "Magpie Local Gateway", group: "third", authStyle: "bearer", modelsAuth: "bearer",
+    baseUrl: "http://127.0.0.1:3425", modelsUrl: "http://127.0.0.1:3425/v1/models",
+    defaultModel: null,
+    extraEnv: { API_TIMEOUT_MS: "3000000", CLAUDE_CODE_MAX_RETRIES: "2" },
+    hint: "应用内置的 Magpie 路由与插件网关（127.0.0.1:3425），可统一接入多家模型与社区插件（如 WorkBuddy）。在上方「内置 Magpie」卡片一键启动并接入。",
+    hintEn: "Built-in Magpie router & plugin gateway (127.0.0.1:3425) for unified multi-provider routing and community plugins. Start and connect in the Magpie card above.",
+    fallbackModels: [],
+  },
 };
 // 端侧小模型（cccodroid）：llama.cpp 的 llama-server 自带 Anthropic Messages 端点（/v1/messages），claude 直连本机。
 // 模型清单就是模型目录里的 .gguf，服务由网关按需拉起，见「端侧小模型」一节

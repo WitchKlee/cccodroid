@@ -1,0 +1,30 @@
+#!/system/bin/sh
+# 内置 Magpie CLI 包装：从 APK 原生库目录（libccmagpie.so）启动，避开 targetSdk 36 的私有目录禁执行（W^X），
+# 并把 MAGPIE_BUN 指向 libccrun.so 跳板，让纯 Go 的 magpie 调用内置 bun 与社区插件（WorkBuddy 等）畅通无阻。
+BIN="${CCAPP_MAGPIE:-${CCAPP_NATIVE_LIB:-/nonexistent}/libccmagpie.so}"
+[ -x "$BIN" ] || { echo "magpie: 未找到内置程序 ($BIN)" >&2; exit 127; }
+
+BUN_REAL="${HOME}/.cccodroid/magpie/bun/bun"
+BUN_SHIM="${HOME}/.cccodroid/magpie/shims/bun"
+if [ -f "$BUN_REAL" ]; then
+  export CCAPP_MAGPIE_BUN_REAL="$BUN_REAL"
+  case ":$PATH:" in *":${HOME}/.cccodroid/magpie/bun:"*) ;; *) export PATH="${HOME}/.cccodroid/magpie/bun:${PATH}" ;; esac
+fi
+if [ -z "$MAGPIE_BUN" ]; then
+  if [ "$CCAPP_EXEC" = "loader" ] && [ -n "${CCAPP_LOADER_RUN:-}" ] && [ -e "$CCAPP_LOADER_RUN" ]; then
+    mkdir -p "${HOME}/.cccodroid/magpie/shims" 2>/dev/null
+    ln -sf "$CCAPP_LOADER_RUN" "$BUN_SHIM" 2>/dev/null
+    export MAGPIE_BUN="$BUN_SHIM"
+  elif [ -f "$BUN_REAL" ]; then
+    export MAGPIE_BUN="$BUN_REAL"
+  fi
+fi
+if [ "$CCAPP_EXEC" = "loader" ] && [ -n "${CCAPP_LOADER_BIN:-}" ]; then
+  case ":$PATH:" in *":${CCAPP_LOADER_BIN}:"*) ;; *) export PATH="${CCAPP_LOADER_BIN}:${PATH}" ;; esac
+fi
+
+ENOSYS="${CCAPP_ENOSYS_RUN:-${CCAPP_NATIVE_LIB:-/nonexistent}/libccenosysrun.so}"
+if [ -x "$ENOSYS" ]; then
+  exec "$ENOSYS" -f "$BIN" "$@"
+fi
+exec "$BIN" "$@"

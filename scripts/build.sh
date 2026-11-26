@@ -69,6 +69,8 @@ mkdir -p "$A/assets/app/licenses"; cp "$ROOT/NOTICE" "$ROOT/LICENSE" "$A/assets/
 cp "$ROOT/third_party/glibc/COPYING.LIB" "$A/assets/app/licenses/glibc-COPYING.LIB"; cp "$ROOT/third_party/glibc/README.md" "$A/assets/app/licenses/glibc-README.md"
 # 7-Zip 以 libcc7zz.so 进了 lib/：LGPL 与 unRAR 许可原文、取源码的途径随包带上
 for f in License.txt copying.txt unRarLicense.txt README.md; do cp "$ROOT/third_party/7zip/$f" "$A/assets/app/licenses/7zip-$f"; done
+# Magpie 以 libccmagpie.so 进了 lib/：MIT 要求随包带上版权与许可原文
+cp "$ROOT/third_party/magpie/LICENSE" "$A/assets/app/licenses/magpie-LICENSE"
 # 工具包下载地址（Release 目录，按序尝试）。测试时可用 DEVKIT_BASES="http://… https://…" 覆盖
 if [ -n "$DEVKIT_BASES" ]; then echo "$DEVKIT_BASES" | tr " " "\n" > "$A/assets/devkit-sources.txt"
 else cp "$ROOT/devkit-sources.txt" "$A/assets/devkit-sources.txt"; fi
@@ -145,6 +147,27 @@ if(!p.lock||!/^[0-9a-f]{64}$/.test(p.lock.sha256||"")){console.error("✗ devkit
 const h=c.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex");
 if(h!==p.lock.sha256){fs.rmSync(process.argv[2],{force:true});console.error("✗ devkit.lock.json 的 sha256 是 "+h+"，钉的是 "+p.lock.sha256+"（已删缓存）");process.exit(1)}' "$A/assets/devkit-pin.json" "$LOCK" || exit 1
 cp "$NL/"libcc*.so "$A/build/lib/arm64-v8a/"
+# 内置 Magpie（yetone/magpie，MIT 协议，官方原生 android/arm64 构建）：放进 lib/arm64-v8a/libccmagpie.so，
+# 避开 targetSdk 36 W^X 禁执行限制；因 AndroidManifest 开启 extractNativeLibs="true"，APK 内走 DEFLATE 压缩控制体积
+if [ "${NO_MAGPIE:-0}" != "1" ]; then
+  MAGPIE_VER="v0.1.4848"
+  MAGPIE_SHA="37c04530dee05a734d6e41b0faf26634f0fa2110690d5b84a11ffa6b6cb6c21a"
+  MAGPIE_CACHE="$ROOT/devkit/cache/magpie-${MAGPIE_VER}-android-arm64"
+  if [ ! -s "$MAGPIE_CACHE" ]; then
+    echo "▸ 下载 magpie ${MAGPIE_VER} (android-arm64)"
+    curl -fsSL --retry 3 -o "${MAGPIE_CACHE}.tmp" \
+      "https://github.com/yetone/magpie/releases/download/${MAGPIE_VER}/magpie-cli-android-arm64" \
+      && mv "${MAGPIE_CACHE}.tmp" "$MAGPIE_CACHE"
+  fi
+  MAGPIE_GOT=$(sha256sum "$MAGPIE_CACHE" | cut -c1-64)
+  if [ "$MAGPIE_GOT" != "$MAGPIE_SHA" ]; then
+    rm -f "$MAGPIE_CACHE"
+    echo "✗ magpie sha256 校验失败：得到 $MAGPIE_GOT，期望 $MAGPIE_SHA"
+    exit 1
+  fi
+  cp "$MAGPIE_CACHE" "$A/build/lib/arm64-v8a/libccmagpie.so"
+  chmod 0755 "$A/build/lib/arm64-v8a/libccmagpie.so"
+fi
 # 网关和 claude 执行链上来自工具包的文件该有的 sha256（安全 4 第 2 层，见 devkit.mjs gwpin、GwRuntime.java）。
 # 算一次要下基础模块包（约 130 MB），结果按包名存在 android/prebuilt/，钉的工具包没变就直接用
 node "$ROOT/devkit/devkit.mjs" gwpin --pin "$A/assets/devkit-pin.json" --target "$PIN_TARGET" --vendored "$A/prebuilt" --out "$A/assets/gwpin.json" || exit 1
@@ -170,7 +193,10 @@ node -e 'const fs=require("fs"),b=fs.readFileSync(process.argv[1]);let e=b.lengt
   if(miss.length){console.error("✗ FILES 里有 "+miss.length+" 个文件没进 APK：",miss.slice(0,5).join(" "));process.exit(1)}' "$A/build/unsigned.apk" "$A/assets/app/FILES" || exit 1
 if [ "$SIGN" = apksigner ]; then
   # SDK 的 apksigner：先把 classes.dex 塞进包、对齐，再签（最低 API 26，它自己决定出 v2 / v3）
-  ( cd "$A/build" && zip -q unsigned.apk classes.dex && zip -q -0 unsigned.apk lib/arm64-v8a/libldlinux.so lib/arm64-v8a/libcc*.so )
+  # libccmagpie.so 走常规压缩（DEFLATE，extractNativeLibs=true 安装时自动解压到 nativeLibraryDir），避免 APK 暴涨 ~70 MB
+  ( cd "$A/build" && zip -q unsigned.apk classes.dex \
+    && zip -q -0 unsigned.apk lib/arm64-v8a/libldlinux.so $(ls lib/arm64-v8a/libcc*.so | grep -v '/libccmagpie\.so$') \
+    && { [ ! -f lib/arm64-v8a/libccmagpie.so ] || zip -q unsigned.apk lib/arm64-v8a/libccmagpie.so; } )
   ${ZIPALIGN:-zipalign} -p -f 4 "$A/build/unsigned.apk" "$A/build/aligned.apk"
   if [ -n "$KS" ]; then
     ${APKSIGNER:-apksigner} sign --ks "$KS" --ks-pass "pass:${KS_PASS:-android}" --out "$OUT/cccodroid.apk" "$A/build/aligned.apk"
@@ -189,8 +215,8 @@ node --input-type=module -e "
 import fs from 'node:fs'; import { signApk } from '$ROOT/scripts/apklib.mjs';
 const r = signApk('$A/build/unsigned.apk', '$OUT/cccodroid.apk',
   [{ name: 'classes.dex', data: fs.readFileSync('$A/build/classes.dex'), method: 8 },
-   ...['libldlinux.so', ...fs.readdirSync('$NL').filter((n) => /^libcc.*\.so$/.test(n)).sort()]
-     .map((n) => ({ name: 'lib/arm64-v8a/' + n, data: fs.readFileSync('$A/build/lib/arm64-v8a/' + n), method: 0 }))], '$KEY');
+   ...['libldlinux.so', ...fs.readdirSync('$A/build/lib/arm64-v8a').filter((n) => /^libcc.*\.so$/.test(n)).sort()]
+     .map((n) => ({ name: 'lib/arm64-v8a/' + n, data: fs.readFileSync('$A/build/lib/arm64-v8a/' + n), method: n === 'libccmagpie.so' ? 8 : 0 }))], '$KEY');
 console.log('  ' + r.entries + ' 个条目 · ' + (r.size / 1048576).toFixed(2) + ' MB');
 "
 fi

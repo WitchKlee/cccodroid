@@ -174,7 +174,7 @@
     if (setDiscover.has(cat)) setDiscovery(cat, t("查询中…"));
     switch (cat) {
       case "general": loadFonts(); renderTbList(); renderAccent(); renderMsgActs(); break;
-      case "provider": setBaseRead.then(() => { if (live()) { loadProviders(); loadModels(); } }); break;
+      case "provider": setBaseRead.then(() => { if (live()) { loadProviders(); loadModels(); if (typeof loadMagpie === "function") loadMagpie(); } }); break;
       case "claude": loadWorkIsland(); break;
       case "run": loadExecMode(); loadPriv(); break;
       case "storage": stOnOpen(); break;

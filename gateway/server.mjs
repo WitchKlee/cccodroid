@@ -92,9 +92,10 @@ import { routeArc } from "./gw/archiver.mjs";
 import { routeStorage, startAutoClean } from "./gw/storage.mjs";
 import { COOKIE, SESSION, UI_HOST, cookieHostOk, denyLog, denyReason, localAddr, proofFor, tokenOk } from "./gw/access.mjs";
 import { startWorkIsland, stopWorkIslandSync } from "./gw/work-island.mjs";
+import { bootMagpie, routeMagpie } from "./gw/magpie.mjs";
 
 // 各模块的路由函数，按原来分支的先后排；返回 NEXT 表示不归它管
-const ROUTES = [routeClaude, routeFeedback, routeUsage, routeCaps, routeProviders, routeSettings, routeProjects, routeBookmarks, routeFonts, commandRoutes(builtinCommands), routeUi, routeSched, routeSessModel, routeBackfill, routeMerge, routeProfile, routeLineage, routeArchive, routeSessions, routeExtensions, routeModels, routeTerminal, routeComponents, routeModules, routeOrphans, routeStorage, routeCustom, routeGit, routeLocal, routeOffice, routePdfTools, routeArc, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun, routeNotices, routeReconcile];
+const ROUTES = [routeClaude, routeFeedback, routeUsage, routeCaps, routeProviders, routeSettings, routeProjects, routeBookmarks, routeFonts, commandRoutes(builtinCommands), routeUi, routeSched, routeSessModel, routeBackfill, routeMerge, routeProfile, routeLineage, routeArchive, routeSessions, routeExtensions, routeModels, routeTerminal, routeComponents, routeModules, routeOrphans, routeStorage, routeCustom, routeGit, routeLocal, routeMagpie, routeOffice, routePdfTools, routeArc, routeFiles, routePreview, routeBus, routeQueue, routeDevside, routeLogin, routeRun, routeNotices, routeReconcile];
 
 // ── 路由 ──────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
@@ -234,6 +235,7 @@ server.listen(CFG.port, "127.0.0.1", () => {
   migrateHookPause().catch((e) => log("转换 hooks 暂停失败: " + e.message));
   ensureSessionRetention().catch((e) => log("补会话保留期失败: " + e.message));
   try { startAutoClean(); } catch (e) { log("存储自动清理启动失败: " + e.message); }
+  try { bootMagpie(); } catch (e) { log("Magpie 自动启动失败: " + e.message); }
   // 托管桥（OpenAI 兼容端点）是应用的子进程：应用升级/被系统清掉时桥跟着没了，以前要等下一句消息才冷启动。
   // 启动后台预热一次，不阻塞网关；尊重停用状态，只恢复上个进程周期留下的故障锁。
   setTimeout(() => {

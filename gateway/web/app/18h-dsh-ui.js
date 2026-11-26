@@ -131,6 +131,7 @@
       rr.textContent = txt || t("就绪");
     }
     renderDshPalettes();
+    if (typeof loadMagpie === "function") loadMagpie(true);
   }
 
   function dshOpenRightDrawer(fromGesture) {
@@ -177,6 +178,7 @@
     else if (act === "term") openTerm();
     else if (act === "git") openGit();
     else if (act === "card") openShareCardLatest();
+    else if (act === "magpie") dshOpenMagpieQuick();
   });
 
   // 右侧抽屉双向跟手滑动（左滑呼出、右滑关闭；尊重横向代码块/表格与系统边缘返回手势）
@@ -770,3 +772,221 @@
     });
     OV.open(ov, { kind: "modal", keep: true, cover: true });
   }
+
+  // ── 内置 Magpie 路由与插件网关控制（设置页 #magpie-card + 右侧抽屉快捷入口） ──
+  let mpState = null;
+  let mpPollT = 0;
+  let mpBusy = false;
+
+  function mpFmtBytes(n) {
+    if (!n || n <= 0) return "0 B";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return Math.round(n / 1024) + " KB";
+    return n + " B";
+  }
+
+  function renderMagpie(st) {
+    if (!st) return;
+    mpState = st;
+    const running = !!st.running;
+    const starting = st.state === "starting";
+    const errState = st.state === "error";
+
+    // 右侧抽屉快捷磁贴状态同步
+    const rdot = $("dsh-rmp-dot");
+    const rtxt = $("dsh-rmp-txt");
+    if (rdot) {
+      rdot.classList.toggle("on", running);
+      rdot.classList.toggle("err", errState);
+    }
+    if (rtxt) {
+      rtxt.textContent = !st.available ? t("未内置")
+        : running ? t("运行中")
+        : starting ? t("启动中…")
+        : errState ? t("异常")
+        : t("未启动");
+    }
+
+    const card = $("magpie-card");
+    if (!card) return;
+    const pill = $("mp-state");
+    if (pill) {
+      pill.textContent = !st.available ? t("未内置")
+        : running ? (st.connected ? t("运行中 · 已接入") : t("运行中"))
+        : starting ? t("启动中…")
+        : errState ? t("启动异常")
+        : t("未启动");
+    }
+    const ver = $("mp-ver");
+    if (ver) ver.textContent = st.version ? `v${st.version} · ${st.gatewayPort}/${st.webPort}` : "";
+
+    const btnToggle = $("mp-toggle");
+    if (btnToggle) {
+      btnToggle.disabled = !st.available || mpBusy || starting;
+      btnToggle.textContent = running ? t("停止 Magpie") : (starting ? t("启动中…") : t("启动 Magpie"));
+      btnToggle.classList.toggle("primary", !running);
+      btnToggle.classList.toggle("ghost", running);
+    }
+    const btnOpen = $("mp-open");
+    if (btnOpen) btnOpen.disabled = !running || !st.webUrl;
+
+    const btnConn = $("mp-connect");
+    if (btnConn) {
+      btnConn.disabled = !st.available || mpBusy;
+      btnConn.textContent = st.connected ? t("同步模型") : t("一键接入");
+    }
+
+    const bun = st.bun || {};
+    const bunInfo = $("mp-bun-info");
+    const bunBtn = $("mp-bun");
+    const prog = $("mp-prog");
+    const progFill = $("mp-prog-fill");
+    if (bunInfo) {
+      if (bun.downloading) {
+        const pct = bun.total > 0 ? Math.min(100, Math.round((bun.done / bun.total) * 100)) : 0;
+        const phaseTxt = bun.phase === "verifying" ? t("校验 SHA-256…")
+          : bun.phase === "extracting" ? t("正在解压 Bun…")
+          : bun.total > 0 ? `${t("下载中")} ${mpFmtBytes(bun.done)} / ${mpFmtBytes(bun.total)} (${pct}%)`
+          : `${t("下载中")} ${mpFmtBytes(bun.done)}`;
+        bunInfo.textContent = phaseTxt;
+      } else if (bun.installed) {
+        bunInfo.textContent = st.execMode === "loader"
+          ? t("Bun v{v} 已就绪（W^X 跳板模式）", { v: bun.version || "1.4.2" })
+          : t("Bun v{v} 已就绪", { v: bun.version || "1.4.2" });
+      } else if (bun.err) {
+        bunInfo.textContent = t("安装失败：{err}", { err: bun.err });
+      } else {
+        bunInfo.textContent = t("未安装（安装后可运行 WorkBuddy 等社区插件）");
+      }
+    }
+    if (bunBtn) {
+      bunBtn.disabled = !!bun.downloading;
+      bunBtn.textContent = bun.downloading ? t("安装中…") : (bun.installed ? t("重装引擎") : t("安装引擎"));
+    }
+    if (prog && progFill) {
+      prog.classList.toggle("hidden", !bun.downloading);
+      if (bun.downloading) {
+        const pct = bun.phase === "extracting" || bun.phase === "verifying" ? 95
+          : bun.total > 0 ? Math.max(4, Math.min(92, Math.round((bun.done / bun.total) * 100))) : 25;
+        progFill.style.width = pct + "%";
+      }
+    }
+
+    const swAuto = $("mp-autostart");
+    if (swAuto && swAuto.checked !== !!st.autoStart) swAuto.checked = !!st.autoStart;
+
+    const errEl = $("mp-err");
+    if (errEl) {
+      const msg = st.err || (bun.phase === "error" ? bun.err : "");
+      errEl.textContent = msg || "";
+      errEl.classList.toggle("hidden", !msg);
+    }
+
+    const logsEl = $("mp-logs");
+    if (logsEl) {
+      const lines = Array.isArray(st.logs) ? st.logs : [];
+      logsEl.textContent = lines.length ? lines.join("\n") : t("暂无日志");
+    }
+
+    // 启动中或 Bun 下载中自动轮询状态
+    if (mpPollT) { clearTimeout(mpPollT); mpPollT = 0; }
+    if (starting || bun.downloading) {
+      mpPollT = setTimeout(() => loadMagpie(true), 900);
+    }
+  }
+
+  async function loadMagpie(silent) {
+    try {
+      const st = await api("/api/magpie/status");
+      renderMagpie(st);
+      return st;
+    } catch (e) {
+      if (!silent) toast(t("读取 Magpie 状态失败：{err}", { err: e.message || e }), true);
+      return null;
+    }
+  }
+
+  function dshOpenMagpieQuick() {
+    if (mpState && mpState.running && mpState.webUrl) {
+      openWeb(mpState.webUrl);
+      return;
+    }
+    openSettings("provider");
+    requestAnimationFrame(() => {
+      const card = $("magpie-card");
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+
+  const mpPost = (url, body, timeout = 25000) => api(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+    timeout,
+  });
+
+  $("mp-toggle")?.addEventListener("click", async () => {
+    if (mpBusy) return;
+    mpBusy = true;
+    const stop = !!(mpState && mpState.running);
+    renderMagpie(mpState);
+    try {
+      const st = await mpPost(stop ? "/api/magpie/stop" : "/api/magpie/start", {}, 25000);
+      renderMagpie(st);
+      toast(stop ? t("Magpie 已停止") : t("Magpie 已启动"));
+    } catch (e) {
+      if (e.body) renderMagpie(e.body);
+      toast((stop ? t("停止失败：") : t("启动失败：")) + (e.message || e), true);
+    } finally {
+      mpBusy = false;
+      renderMagpie(mpState);
+    }
+  });
+
+  $("mp-open")?.addEventListener("click", () => {
+    if (mpState && mpState.running && mpState.webUrl) openWeb(mpState.webUrl);
+    else toast(t("请先启动 Magpie"), true);
+  });
+
+  $("mp-connect")?.addEventListener("click", async () => {
+    if (mpBusy) return;
+    mpBusy = true;
+    renderMagpie(mpState);
+    try {
+      const r = await mpPost("/api/magpie/connect", {}, 25000);
+      if (r && r.status) renderMagpie(r.status);
+      if (typeof loadProviders === "function") await loadProviders();
+      if (typeof loadModels === "function") await loadModels(true);
+      const n = r && Number(r.modelCount) || 0;
+      toast(n > 0 ? t("已接入 Magpie，同步到 {n} 个模型", { n }) : t("已接入 Magpie（请在控制台添加上游厂商或插件后刷新模型）"));
+    } catch (e) {
+      if (e.body && e.body.status) renderMagpie(e.body.status);
+      toast(t("接入 Magpie 失败：{err}", { err: e.message || e }), true);
+    } finally {
+      mpBusy = false;
+      renderMagpie(mpState);
+    }
+  });
+
+  $("mp-bun")?.addEventListener("click", async () => {
+    try {
+      await mpPost("/api/magpie/bun/install", {}, 15000);
+      toast(t("开始下载 Bun 插件引擎…"));
+      loadMagpie(true);
+    } catch (e) {
+      toast(t("启动 Bun 安装失败：{err}", { err: e.message || e }), true);
+    }
+  });
+
+  $("mp-autostart")?.addEventListener("change", async (e) => {
+    const want = !!e.target.checked;
+    try {
+      const r = await mpPost("/api/magpie/config", { autoStart: want }, 15000);
+      if (r && r.status) renderMagpie(r.status);
+      toast(want ? t("已开启 Magpie 随应用自动启动") : t("已关闭 Magpie 自动启动"));
+    } catch (err) {
+      e.target.checked = !want;
+      toast(t("保存失败：{err}", { err: err.message || err }), true);
+    }
+  });
+

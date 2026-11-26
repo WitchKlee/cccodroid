@@ -821,7 +821,186 @@ html[data-skin="dsh"] .dsh-card-ctrl {
   min-width: 96px;
 }
 
-/* ── 11. Reduced-motion & motion-off safety ── */
+/* ── 11. Built-in Magpie Gateway Card & Quick Tile ── */
+.dsh-rtile.span2 {
+  grid-column: span 2;
+}
+.dsh-rmp-st {
+  margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--fg3);
+  font-weight: 500;
+}
+.dsh-rmp-st em {
+  font-style: normal;
+}
+.dsh-rmp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg3);
+  opacity: .55;
+  flex: 0 0 7px;
+}
+.dsh-rmp-dot.on {
+  background: var(--ok, #16a34a);
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok, #16a34a) 22%, transparent);
+}
+.dsh-rmp-dot.err {
+  background: var(--err, #dc2626);
+  opacity: 1;
+}
+.mp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  margin: 10px 0;
+}
+html[data-skin="dsh"] .mp-card {
+  background: var(--dsh-card);
+  border-color: var(--dsh-hairline);
+  box-shadow: var(--dsh-inner-glow), 0 8px 22px -12px var(--dsh-shadow-card);
+}
+.mp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mp-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mp-title b {
+  font-size: 14px;
+  color: var(--strong);
+}
+.mp-ver {
+  font-size: 11.5px;
+  color: var(--fg3);
+  font-family: var(--mono);
+}
+.mp-desc {
+  margin: 0;
+  color: var(--fg2);
+  line-height: 1.5;
+}
+.mp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mp-acts .btn {
+  margin: 0;
+}
+.mp-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+html[data-skin="dsh"] .mp-sub {
+  border-top-color: var(--dsh-hairline);
+}
+.mp-sub-l {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mp-sub-l b {
+  font-size: 13px;
+  color: var(--fg);
+}
+.mp-sub-l small {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+.mp-prog {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.mp-prog-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent-btn);
+  transition: width .22s ease;
+}
+.mp-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+html[data-skin="dsh"] .mp-toggle {
+  border-top-color: var(--dsh-hairline);
+}
+.mp-toggle span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mp-toggle b {
+  font-size: 13px;
+  color: var(--fg);
+}
+.mp-toggle small {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+.mp-err {
+  margin: 0;
+  color: var(--err, #dc2626);
+  word-break: break-word;
+}
+.mp-logs-wrap {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+html[data-skin="dsh"] .mp-logs-wrap {
+  border-top-color: var(--dsh-hairline);
+}
+.mp-logs-wrap summary {
+  font-size: 12px;
+  color: var(--fg2);
+  cursor: pointer;
+  user-select: none;
+}
+.mp-logs {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--fg2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 12. Reduced-motion & motion-off safety ── */
 @media (prefers-reduced-motion: reduce) {
   html[data-skin="dsh"] *,
   #dsh-rdrawer,
